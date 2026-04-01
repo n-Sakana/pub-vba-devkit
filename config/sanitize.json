@@ -1,0 +1,7 @@
+{
+  "edr": {
+    "Win32 API (Declare)": true,
+    "DLL loading": true
+  },
+  "compat": {}
+}

@@ -1,0 +1,46 @@
+{
+  "edr": {
+    "Win32 API (Declare)": { "detect": true },
+    "Shell / process": { "detect": true },
+    "PowerShell / WScript": { "detect": true }
+  },
+  "compat": {
+    "DLL loading": { "detect": true },
+    "SendKeys": { "detect": true },
+    "AppActivate": { "detect": true },
+    "64-bit: Missing PtrSafe": { "detect": false },
+    "64-bit: Long for handles": { "detect": true },
+    "64-bit: VarPtr/ObjPtr/StrPtr": { "detect": true },
+    "Deprecated: DDE": { "detect": true },
+    "Deprecated: IE Automation": { "detect": true },
+    "Deprecated: Legacy Controls": { "detect": true },
+    "Deprecated: DAO": { "detect": true },
+    "Legacy: DefType": { "detect": false },
+    "Legacy: GoSub": { "detect": false },
+    "Legacy: While/Wend": { "detect": false }
+  },
+  "path": {
+    "Fixed drive letter": { "detect": true },
+    "UNC path": { "detect": true },
+    "User folder": { "detect": true },
+    "Desktop / Documents": { "detect": true },
+    "AppData": { "detect": true },
+    "Program Files": { "detect": true },
+    "Fixed printer name": { "detect": true },
+    "Fixed IP address": { "detect": true },
+    "Fixed connection host": { "detect": true },
+    "localhost": { "detect": false },
+    "Connection string": { "detect": true },
+    "External workbook open (literal)": { "detect": true },
+    "Dir() path check": { "detect": true },
+    "Path concatenation": { "detect": true },
+    "SaveAs call": { "detect": true },
+    "External workbook ref": { "detect": true },
+    "BeforeSave event": { "detect": true },
+    "AfterSave event": { "detect": true },
+    "LinkSources / UpdateLink": { "detect": true },
+    "Workbooks.Open (variable)": { "detect": true },
+    "CurDir": { "detect": true },
+    "ChDir": { "detect": true }
+  }
+}
