@@ -78,15 +78,15 @@ Option Explicit
 Public Sub OpenReport()
     Dim path As String
     path = "C:\Reports\monthly_report.xlsx"
-    Workbooks.Open "\\fileserver\shared\templates\base.xlsm"
+    Workbooks.Open "\\server\shared\templates\base.xlsm"
 
     Dim userPath As String
-    userPath = "C:\Users\tanaka\Desktop\output.csv"
+    userPath = "C:\Users\example\Desktop\output.csv"
 
     Dim appDataPath As String
-    appDataPath = "C:\Users\tanaka\AppData\Local\MyApp\config.ini"
+    appDataPath = "C:\Users\example\AppData\Local\MyApp\config.ini"
 
-    Application.ActivePrinter = "HP LaserJet on Ne03:"
+    Application.ActivePrinter = "PrinterName on Ne00:"
     ActiveWorkbook.PrintOut
 End Sub
 
