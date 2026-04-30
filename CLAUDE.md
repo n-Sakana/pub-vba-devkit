@@ -1,69 +1,70 @@
 # CLAUDE.md - pub/vba-devkit
 
-## プロジェクト概要
+## Project Overview
 
-Excel / VBA 資産のコマンドライン開発キット。
-`.xlsm` から VBA ソースを抽出、差分比較、環境情報テスト、秘匿化、保護解除の
-一連操作を PowerShell から提供する。先生（dummy-org）の VBA 作業基盤。
+A command-line development kit for Excel / VBA assets.
+Provides a PowerShell-driven workflow for extracting VBA source from `.xlsm`,
+diffing, environment-info testing, sanitizing, and unlocking protection.
+The VBA work platform for the teacher (dummy-org).
 
-## 技術スタック
+## Tech Stack
 
-- PowerShell 5.1（Windows 同梱版）+ `.ps1` / `.bat` ラッパ
-- Excel 自動化: COM （Excel.Application）
-- 配布: ディレクトリコピーで完結、git clone で使える
+- PowerShell 5.1 (the version bundled with Windows) + `.ps1` / `.bat` wrappers
+- Excel automation: COM (Excel.Application)
+- Distribution: a directory copy is enough; works via `git clone`
 
-## ディレクトリ構成
+## Directory Layout
 
 ```
 vba-devkit/
-├── *.bat                # エントリポイント（Analyze / Diff / EnvTest / Extract / Sanitize / Unlock）
+├── *.bat                # Entry points (Analyze / Diff / EnvTest / Extract / Sanitize / Unlock)
 ├── lib/
-│   ├── VBAToolkit.psm1  # 共通モジュール
+│   ├── VBAToolkit.psm1  # Shared module
 │   ├── {Analyze|Diff|EnvTest|Extract|Sanitize|Unlock}.ps1
 │   └── internal/
-├── config/              # 各コマンドの設定テンプレ
-├── demos/               # 動作確認用サンプル
-├── samples/             # 典型的な入力例
-├── test/                # 自動テスト
-├── docs/                # 使い方詳細
-└── env-test-results/    # EnvTest.bat の実行結果（**.gitignore 対象**）
+├── config/              # Per-command config templates
+├── demos/               # Samples for sanity checks
+├── samples/             # Typical input examples
+├── test/                # Automated tests
+├── docs/                # Detailed usage
+└── env-test-results/    # Output of EnvTest.bat (**.gitignore target**)
 ```
 
-## コマンド
+## Commands
 
 ```cmd
-Extract.bat <path.xlsm>      # VBA ソース抽出 → .bas / .cls / .frm
-Diff.bat <old.xlsm> <new>    # 2 ブックの VBA 差分
-Analyze.bat <path.xlsm>      # VBA 構造・import・コールグラフ解析
-EnvTest.bat                  # PC 固有情報の収集（テナント名・パス・レジストリ）
-Sanitize.bat <path>          # 秘匿化（テナント名を *** に置換）
-Unlock.bat <path.xlsm>       # VBA プロジェクト保護解除
+Extract.bat <path.xlsm>      # Extract VBA source → .bas / .cls / .frm
+Diff.bat <old.xlsm> <new>    # VBA diff between two workbooks
+Analyze.bat <path.xlsm>      # Analyze VBA structure, imports, call graph
+EnvTest.bat                  # Collect PC-specific info (tenant name, paths, registry)
+Sanitize.bat <path>          # Sanitize (replace tenant names with ***)
+Unlock.bat <path.xlsm>       # Unlock VBA project protection
 ```
 
-## 設計原則
+## Design Principles
 
-- **秘匿対応**: `EnvTest.bat` の出力と `env-test-results/` はテナント名等の環境依存文字列を含みうる
-  - `.gitignore` で確実に除外
-  - commit 前に `Sanitize.bat` を通すか、手動で `Mask-Path` ロジックを確認
-  - 2026-04-18 に `OneDrive - {tenant}` 形式の漏洩を修正済（commit `e4c17ee`）
-- **Windows 専用**: PowerShell 5.1 同梱 + Excel が入っている PC を前提
-- **COM リーク回避**: Excel.Application は使い終わったら必ず Quit + `[GC]::Collect()` 相当の後処理
-- **ビルド不要**: `.psm1` / `.ps1` を直接実行
+- **Sanitization handling**: output of `EnvTest.bat` and the `env-test-results/` directory may contain environment-dependent strings such as tenant names
+  - Reliably excluded via `.gitignore`
+  - Run `Sanitize.bat` before commit, or manually verify the `Mask-Path` logic
+  - Fixed an `OneDrive - {tenant}` style leak on 2026-04-18 (commit `e4c17ee`)
+- **Windows only**: assumes a PC with bundled PowerShell 5.1 + Excel installed
+- **Avoid COM leaks**: always Quit Excel.Application after use and follow up with `[GC]::Collect()`-equivalent cleanup
+- **No build step**: `.psm1` / `.ps1` are executed directly
 
-## テスト
+## Tests
 
 ```cmd
-test\Run-All.bat           # 全テスト
-test\Test-Extract.ps1      # 個別
+test\Run-All.bat           # All tests
+test\Test-Extract.ps1      # Individual
 ```
 
-## 注意事項
+## Notes
 
-- VBA 資産は `.xlsm` の中に完結、git 管理しやすい形 (.bas/.cls) に抽出してから管理する運用
-- 秘匿化忘れ防止: git hooks（pre-commit）で `env-test-results/` のステージングをブロック推奨
-- AI に操作させる場合、`Unlock.bat` は強力なので先生の明示指示を待つ
+- VBA assets live entirely inside `.xlsm`; the workflow extracts them into git-friendly forms (.bas/.cls) for management
+- To prevent forgetting sanitization: a git pre-commit hook that blocks staging of `env-test-results/` is recommended
+- When letting an AI operate, `Unlock.bat` is powerful — wait for explicit instruction from the teacher
 
-## 関連
+## Related
 
-- pub/casedesk — この devkit の主要ユーザー（ケース管理用 VBA アドイン）
-- pub/watchbox — VBA ではなく PS+C# だが、同じ配布ノリ（launch.bat でダブルクリック起動）
+- pub/casedesk — the main consumer of this devkit (a VBA add-in for case management)
+- pub/watchbox — not VBA but PS+C#; same distribution vibe (double-click launch via launch.bat)
