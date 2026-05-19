@@ -1,4 +1,4 @@
-﻿# vba-devkit
+# vba-devkit
 
 Excel VBA migration toolkit. Binary-level analysis without opening Excel.
 
@@ -11,6 +11,7 @@ Excel VBA migration toolkit. Binary-level analysis without opening Excel.
 | `EnvTest.bat` | Unified environment test launcher (Survey / Probe / Full) |
 | `Extract.bat` | Extract VBA source code (individual modules + combined.txt) |
 | `Analyze.bat` | Analysis + sanitization + migration guide + CSV |
+| `RescueSheets.bat` | Create a sheet/data rescue copy by removing or wiping VBA code |
 | `Diff.bat` | Side-by-side VBA code comparison |
 
 ### Environment Test
@@ -40,6 +41,16 @@ See also: `docs/storage-path-strategy.md`
 |-----|-------------|
 | `Unlock.bat` | Remove VBA project password protection (non-destructive) |
 
+### Sheet rescue / macro removal
+
+`RescueSheets.bat <path>` is the safest route when an EDR-blocked VBA project makes the entire workbook unusable. It does **not** try to preserve executable macro behavior.
+
+- `.xlsm` / `.xltm`: removes the whole VBA package part and writes a macro-free copy (`*_macrofree.xlsx` / `*_macrofree.xltx`).
+- `.xls`: keeps the workbook container but clears every VBA module source stream and zero-fills stale p-code before saving `*_code_removed.xls`.
+- `.xlam`: there is no macro-free sheet workbook format for add-ins, so it uses the same code-clearing path as `.xls`.
+
+Use `Sanitize.bat` when you want the older targeted line-level masking. Use `RescueSheets.bat` when sheet structure and cell data matter more than keeping existing code.
+
 ## Analyze
 
 Analyze is the core tool. It detects risks across 4 categories:
@@ -58,57 +69,60 @@ Environment patterns use 3-tier severity:
 
 3 modes:
 1. **Settings GUI** (no args): Configure detect/sanitize per pattern
-2. **File analysis**: Drop file 竊・HTML viewer + text report + sanitized copy + CSV
-3. **Folder analysis**: Drop folder 竊・analyze all xlsm/xlam/xls recursively
+2. **File analysis**: Drop file → HTML viewer + text report + sanitized copy + CSV
+3. **Folder analysis**: Drop folder → analyze all xlsm/xlam/xls recursively
 
 ## Output
 
 ```
 output/
-笏懌楳笏 20260328_120000_extract/
-笏・  笏懌楳笏 modules/<baseName>/   .bas / .cls / .frm (per-file subfolder)
-笏・  笏披楳笏 <baseName>_combined.txt
-笏懌楳笏 20260328_120500_analyze/
-笏・  笏懌楳笏 analyze.csv           CSV with all files (EDR/Compat/Env/Biz/judgment columns)
-笏・  笏懌楳笏 <name>_analyze.txt    Text report per file
-笏・  笏懌楳笏 <name>_analyze.html   HTML viewer (sidebar + code + outline + tooltips)
-笏・  笏披楳笏 <name>.xlsm           Sanitized copy (if applicable)
-笏懌楳笏 20260328_121000_diff/
-笏・  笏懌楳笏 diff.txt
-笏・  笏披楳笏 diff.html
-笏懌楳笏 20260328_121300_survey/
-笏・  笏懌楳笏 survey.txt
-笏・  笏披楳笏 survey.json
-笏懌楳笏 20260328_121400_envtest/
-笏・  笏懌楳笏 envtest.txt
-笏・  笏懌楳笏 survey.txt
-笏・  笏披楳笏 survey.json
-笏・  笏懌楳笏 probe.txt
-笏・  笏披楳笏 probe_storage.xlsm
-笏披楳笏 20260328_121500_unlock/
-    笏披楳笏 <name>.xlsm
+├── 20260328_120000_extract/
+│   ├── modules/<baseName>/   .bas / .cls / .frm (per-file subfolder)
+│   └── <baseName>_combined.txt
+├── 20260328_120500_analyze/
+│   ├── analyze.csv           CSV with all files (EDR/Compat/Env/Biz/judgment columns)
+│   ├── <name>_analyze.txt    Text report per file
+│   ├── <name>_analyze.html   HTML viewer (sidebar + code + outline + tooltips)
+│   └── <name>.xlsm           Sanitized copy (if applicable)
+├── 20260328_121000_diff/
+│   ├── diff.txt
+│   └── diff.html
+├── 20260328_121300_survey/
+│   ├── survey.txt
+│   └── survey.json
+├── 20260328_121400_envtest/
+│   ├── envtest.txt
+│   ├── survey.txt
+│   ├── survey.json
+│   ├── probe.txt
+│   └── probe_storage.xlsm
+├── 20260328_121450_rescue/
+│   └── <name>_macrofree.xlsx / <name>_code_removed.xls
+└── 20260328_121500_unlock/
+    └── <name>.xlsm
 ```
 
 ## Structure
 
 ```
 vba-devkit/
-笏懌楳笏 EnvTest.bat / Extract.bat / Analyze.bat / Diff.bat / Unlock.bat
-笏懌楳笏 config/
-笏・  笏披楳笏 analyze.json         Detect/sanitize settings per pattern
-笏懌楳笏 lib/
-笏・  笏懌楳笏 VBAToolkit.psm1      Core: OLE2, VBA compress/decompress, C# (Add-Type),
-笏・  笏・                       analysis engine, API replacement DB (60+ entries),
-笏・  笏・                       HTML templates
-笏・  笏懌楳笏 EnvTest.ps1
-笏・  笏懌楳笏 Extract.ps1
-笏・  笏懌楳笏 Analyze.ps1
-笏・  笏懌楳笏 Diff.ps1
-笏・  笏懌楳笏 Unlock.ps1
-笏・  笏懌楳笏 internal/Survey.ps1
-笏・  笏披楳笏 internal/Probe.ps1
-笏懌楳笏 test/                    Test fixtures (.xlsm)
-笏披楳笏 docs/                    Specs and investigation results
+├── EnvTest.bat / Extract.bat / Analyze.bat / RescueSheets.bat / Diff.bat / Unlock.bat
+├── config/
+│   └── analyze.json         Detect/sanitize settings per pattern
+├── lib/
+│   ├── VBAToolkit.psm1      Core: OLE2, VBA compress/decompress, C# (Add-Type),
+│   │                       analysis engine, API replacement DB (60+ entries),
+│   │                       HTML templates
+│   ├── EnvTest.ps1
+│   ├── Extract.ps1
+│   ├── Analyze.ps1
+│   ├── RescueSheets.ps1
+│   ├── Diff.ps1
+│   ├── Unlock.ps1
+│   ├── internal/Survey.ps1
+│   └── internal/Probe.ps1
+├── test/                    Test fixtures (.xlsm)
+└── docs/                    Specs and investigation results
 ```
 
 ## How it works
