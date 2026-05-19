@@ -1,9 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string[]]$Path,
-
-    [ValidateRange(1, 10)]
-    [int]$Mode = 1
+    [string[]]$Path
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,28 +14,6 @@ $script:EdrRuleNames = @(
 )
 $script:SafeFallbackLine = "' *** disabled: unsafe statement"
 $script:SafeContinuationLine = "' *** disabled: continued unsafe statement"
-
-function Get-SanitizeModeName {
-    param([int]$Mode)
-    switch ($Mode) {
-        1 { return 'safe-readable-metadata' }
-        2 { return 'vba-comment-original' }
-        3 { return 'rem-comment-original' }
-        4 { return 'slash-comment-original' }
-        5 { return 'block-comment-original' }
-        6 { return 'light-token-mask' }
-        7 { return 'medium-token-mask' }
-        8 { return 'strong-token-mask' }
-        9 { return 'initial-token-mask' }
-        10 { return 'skeleton-token-mask' }
-        default { return 'unknown' }
-    }
-}
-
-function Test-StrictVerificationMode {
-    param([int]$Mode)
-    return (@(1, 2, 6, 7, 8, 9, 10) -contains $Mode)
-}
 
 function Get-SanitizeTargets {
     param([string[]]$InputPaths)
@@ -214,139 +189,17 @@ function Get-FlatStatementText {
     return ($flat -replace '\s+', ' ').Trim()
 }
 
-function Get-StatementLineCount {
-    param([string]$StatementText)
-    if ([string]::IsNullOrEmpty($StatementText)) { return 0 }
-    return @($StatementText -split "`r`n|`n").Count
-}
-
-function Get-VbaArgumentCount {
-    param([string]$ArgumentText)
-
-    if ([string]::IsNullOrWhiteSpace($ArgumentText)) { return 0 }
-    $text = $ArgumentText.Trim()
-    if ($text.Length -eq 0) { return 0 }
-
-    $count = 1
-    $depth = 0
-    $inString = $false
-    for ($i = 0; $i -lt $text.Length; $i++) {
-        $ch = $text[$i]
-        if ($ch -eq '"') {
-            if ($inString -and ($i + 1) -lt $text.Length -and $text[$i + 1] -eq '"') {
-                $i++
-            } else {
-                $inString = -not $inString
-            }
-            continue
-        }
-        if ($inString) { continue }
-        if ($ch -eq '(') { $depth++; continue }
-        if ($ch -eq ')' -and $depth -gt 0) { $depth--; continue }
-        if ($ch -eq ',' -and $depth -eq 0) { $count++ }
-    }
-    return $count
-}
-
-function Get-ApiRole {
-    param([string]$Name)
-
-    $n = if ($Name) { $Name.ToLowerInvariant() } else { '' }
-    switch -Regex ($n) {
-        'sleep|wait' { return 'wait-delay' }
-        'tick|counter|performance|time' { return 'time-measurement' }
-        'username|user' { return 'account-name-lookup' }
-        'computername|hostname' { return 'computer-name-lookup' }
-        'temppath|tempfile' { return 'temporary-path-lookup' }
-        'findwindow|windowfrompoint' { return 'window-search' }
-        'setwindowpos|movewindow' { return 'window-positioning' }
-        'showwindow' { return 'window-visibility' }
-        'foreground|activewindow' { return 'foreground-window-control' }
-        'sendmessage|postmessage' { return 'window-message-send' }
-        'systemmetrics|screen' { return 'system-display-metrics' }
-        'shellexecute' { return 'open-with-associated-app' }
-        'loadlibrary|freeLibrary|getprocaddress' { return 'dynamic-library-access' }
-        'copymemory|movememory|rtlmove' { return 'memory-copy' }
-        'clipboard' { return 'clipboard-access' }
-        'file|path|directory' { return 'file-system-helper' }
-        default { return 'native-os-call' }
-    }
-}
-
-function Get-LibraryRole {
-    param([string]$LibraryName)
-
-    $lib = if ($LibraryName) { $LibraryName.ToLowerInvariant() } else { '' }
-    switch -Regex ($lib) {
-        'user32|gdi32|comctl|oleacc' { return 'ui-windowing' }
-        'advapi|secur' { return 'account-security' }
-        'kernel|ntdll' { return 'core-system' }
-        'urlmon|wininet|winhttp' { return 'networking' }
-        'shell32' { return 'desktop-integration' }
-        default { if ($lib) { return 'custom-or-unknown' } else { return 'unknown' } }
-    }
-}
-
-function Get-InvocationShape {
-    param([string]$StatementText)
-
-    $flat = Get-FlatStatementText $StatementText
-    $shape = [ordered]@{
-        Source = 'unknown'
-        Target = 'unknown'
-        Command = 'unknown'
-    }
-
-    if ($flat -match '"[^"]*"') { $shape.Command = 'literal' }
-    elseif ($flat -match '\b[A-Za-z_][A-Za-z0-9_]*\b') { $shape.Command = 'variable-or-expression' }
-
-    $lower = $flat.ToLowerInvariant()
-    if ($lower -match '\.exe\b') { $shape.Target = 'executable' }
-    if ($lower -match 'notepad(?:\.exe)?') { $shape.Target = 'text-editor-app' }
-    if ($lower -match '\bcmd(?:\.exe)?\b') { $shape.Target = 'command-interpreter' }
-    if ($lower -match 'power\s*shell|powershell|pwsh') { $shape.Target = 'script-engine' }
-    if ($lower -match 'wscript|cscript|mshta') { $shape.Target = 'script-runtime' }
-
-    if ($lower -match 'wscript\.shell') { $shape.Source = 'automation-object' }
-    elseif ($lower -match '\bshell\s*[\("]') { $shape.Source = 'language-process-launch' }
-    elseif ($lower -match '\bcmd\s*/[ck]') { $shape.Source = 'command-interpreter' }
-    elseif ($lower -match 'power\s*shell|powershell|pwsh|wscript|cscript|mshta') { $shape.Source = 'script-host-reference' }
-
-    return $shape
-}
-
 function Get-DeclareMetadata {
     param([string]$StatementText)
 
     $flat = Get-FlatStatementText $StatementText
     $meta = [ordered]@{
         Kind = 'api-decl'
-        Role = 'native-os-call'
-        LibraryRole = 'unknown'
-        CallableType = 'unknown'
-        Scope = 'unspecified'
-        ArgCount = 0
-        ReturnType = 'none-or-unknown'
         Names = @()
     }
 
-    if ($flat -match '(?i)^\s*(Private|Public)\b') {
-        $meta.Scope = $Matches[1].ToLowerInvariant()
-    }
     if ($flat -match '(?i)\bDeclare\s+(?:PtrSafe\s+)?(Function|Sub)\s+([A-Za-z_][A-Za-z0-9_]*)\b') {
-        $meta.CallableType = $Matches[1].ToLowerInvariant()
-        $declaredName = $Matches[2]
-        $meta.Role = Get-ApiRole $declaredName
-        $meta.Names = @($declaredName)
-    }
-    if ($flat -match '(?i)\bLib\s+"([^"]+)"') {
-        $meta.LibraryRole = Get-LibraryRole $Matches[1]
-    }
-    if ($flat -match '\((.*)\)') {
-        $meta.ArgCount = Get-VbaArgumentCount $Matches[1]
-    }
-    if ($flat -match '(?i)\)\s+As\s+([A-Za-z_][A-Za-z0-9_]*)\b') {
-        $meta.ReturnType = $Matches[1]
+        $meta.Names = @($Matches[2])
     }
 
     $aliases = [System.Collections.ArrayList]::new()
@@ -355,7 +208,6 @@ function Get-DeclareMetadata {
     }
     if ($aliases.Count -gt 0) {
         foreach ($alias in $aliases) {
-            if ($meta.Role -eq 'native-os-call') { $meta.Role = Get-ApiRole $alias }
             $meta.Names = @($meta.Names + $alias)
         }
     }
@@ -384,22 +236,6 @@ function Add-DeclareNames {
     if (-not $Metadata -or -not $Metadata.Names) { return }
     foreach ($name in $Metadata.Names) {
         Add-NameToSet $NameSet $name $Metadata
-    }
-}
-
-function Get-OriginalReplacementLine {
-    param(
-        [string]$StatementText,
-        [int]$Mode
-    )
-
-    $flat = Get-FlatStatementText $StatementText
-    switch ($Mode) {
-        2 { return "' *** original-vba: $flat" }
-        3 { return "Rem *** original-rem: $flat" }
-        4 { return "// *** original-slash: $flat" }
-        5 { return "/* *** original-block: $flat */" }
-        default { return "' *** original: $flat" }
     }
 }
 
@@ -443,42 +279,14 @@ function Get-RelevantMaskTokens {
 }
 
 function Mask-TokenText {
-    param(
-        [string]$Token,
-        [int]$Mode
-    )
+    param([string]$Token)
 
     if ([string]::IsNullOrEmpty($Token)) { return $Token }
     $len = $Token.Length
     if ($len -le 1) { return '*' }
 
-    switch ($Mode) {
-        6 {
-            $left = [Math]::Min(3, [Math]::Max(1, $len - 3))
-            $right = if ($len -gt 5) { 2 } else { 1 }
-        }
-        7 {
-            $left = [Math]::Min(2, [Math]::Max(1, $len - 2))
-            $right = 1
-        }
-        8 {
-            $left = 1
-            $right = 1
-        }
-        9 {
-            $left = 1
-            $right = 0
-        }
-        10 {
-            $left = 0
-            $right = 0
-        }
-        default {
-            $left = 1
-            $right = 1
-        }
-    }
-
+    $left = [Math]::Min(3, [Math]::Max(1, $len - 3))
+    $right = if ($len -gt 5) { 2 } else { 1 }
     if ($left + $right -ge $len) {
         $left = 1
         $right = 0
@@ -490,17 +298,12 @@ function Mask-TokenText {
 function Get-MaskedStatementText {
     param(
         [string]$StatementText,
-        $Metadata,
-        [int]$Mode
+        $Metadata
     )
 
     $text = Get-FlatStatementText $StatementText
-    if ($Mode -eq 10) {
-        return ([regex]::Replace($text, '[A-Za-z0-9_]', '*'))
-    }
-
     foreach ($token in (Get-RelevantMaskTokens $text $Metadata)) {
-        $replacement = Mask-TokenText $token $Mode
+        $replacement = Mask-TokenText $token
         $text = [regex]::Replace($text, [regex]::Escape($token), [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $replacement }, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     }
     return $text
@@ -510,51 +313,21 @@ function Get-MaskedReplacementLine {
     param(
         [string]$Kind,
         [string]$StatementText,
-        $Metadata,
-        [int]$Mode
+        $Metadata
     )
 
-    $masked = Get-MaskedStatementText $StatementText $Metadata $Mode
-    return "' *** masked$Mode kind=${Kind}: $masked"
+    $masked = Get-MaskedStatementText $StatementText $Metadata
+    return "' *** masked kind=${Kind}: $masked"
 }
 
 function New-ReplacementComment {
     param(
         [string]$Kind,
         [string]$StatementText,
-        $Metadata,
-        [int]$Mode
+        $Metadata
     )
 
-    if ($Mode -ge 2 -and $Mode -le 5) {
-        return Get-OriginalReplacementLine $StatementText $Mode
-    }
-    if ($Mode -ge 6 -and $Mode -le 10) {
-        return Get-MaskedReplacementLine $Kind $StatementText $Metadata $Mode
-    }
-
-    $lineCount = Get-StatementLineCount $StatementText
-    $charCount = if ($StatementText) { $StatementText.Length } else { 0 }
-
-    switch ($Kind) {
-        'api-decl' {
-            return "' *** disabled: api-decl role=$($Metadata.Role) lib=$($Metadata.LibraryRole) shape=$($Metadata.CallableType) scope=$($Metadata.Scope) returns=$($Metadata.ReturnType) args=$($Metadata.ArgCount) lines=$lineCount chars=$charCount"
-        }
-        'api-call' {
-            return "' *** disabled: api-call role=$($Metadata.Role) lines=$lineCount chars=$charCount"
-        }
-        'process-launch' {
-            $shape = Get-InvocationShape $StatementText
-            return "' *** disabled: process-launch source=$($shape.Source) target=$($shape.Target) command=$($shape.Command) lines=$lineCount chars=$charCount"
-        }
-        'script-host' {
-            $shape = Get-InvocationShape $StatementText
-            return "' *** disabled: script-host source=$($shape.Source) target=$($shape.Target) command=$($shape.Command) lines=$lineCount chars=$charCount"
-        }
-        default {
-            return "$script:SafeFallbackLine lines=$lineCount chars=$charCount"
-        }
-    }
+    return Get-MaskedReplacementLine $Kind $StatementText $Metadata
 }
 
 function Get-CompactReplacementComment {
@@ -563,17 +336,8 @@ function Get-CompactReplacementComment {
     if ([string]::IsNullOrWhiteSpace($ReplacementComment)) {
         return $script:SafeFallbackLine
     }
-    if ($ReplacementComment -match 'api-decl role=([^ ]+)') {
-        return "' *** disabled: api-decl role=$($Matches[1])"
-    }
-    if ($ReplacementComment -match 'api-call role=([^ ]+)') {
-        return "' *** disabled: api-call role=$($Matches[1])"
-    }
-    if ($ReplacementComment -match 'process-launch .*target=([^ ]+)') {
-        return "' *** disabled: process-launch target=$($Matches[1])"
-    }
-    if ($ReplacementComment -match 'script-host .*target=([^ ]+)') {
-        return "' *** disabled: script-host target=$($Matches[1])"
+    if ($ReplacementComment -match 'masked kind=([^:]+):') {
+        return "' *** masked kind=$($Matches[1])"
     }
     return $script:SafeFallbackLine
 }
@@ -711,8 +475,7 @@ function New-ModulePlan {
         [string]$ModuleName,
         [hashtable]$Module,
         [System.Collections.IEnumerable]$Rules,
-        [hashtable]$ApiNameSet,
-        [int]$Mode
+        [hashtable]$ApiNameSet
     )
 
     $lines = [string[]]@($Module.Lines)
@@ -731,13 +494,13 @@ function New-ModulePlan {
             if ($ruleName -eq 'Win32 API (Declare)') {
                 $metadata = Get-DeclareMetadata $statement
                 Add-DeclareNames $ApiNameSet $metadata
-                $replacement[$i] = New-ReplacementComment 'api-decl' $statement $metadata $Mode
+                $replacement[$i] = New-ReplacementComment 'api-decl' $statement $metadata
             } elseif ($ruleName -eq 'Shell / process') {
-                $replacement[$i] = New-ReplacementComment 'process-launch' $statement $null $Mode
+                $replacement[$i] = New-ReplacementComment 'process-launch' $statement $null
             } elseif ($ruleName -eq 'PowerShell / WScript') {
-                $replacement[$i] = New-ReplacementComment 'script-host' $statement $null $Mode
+                $replacement[$i] = New-ReplacementComment 'script-host' $statement $null
             } else {
-                $replacement[$i] = New-ReplacementComment 'unknown' $statement $null $Mode
+                $replacement[$i] = New-ReplacementComment 'unknown' $statement $null
             }
         }
     }
@@ -758,8 +521,7 @@ function New-ModulePlan {
 function Complete-ModulePlan {
     param(
         $Plan,
-        [hashtable]$ApiNameSet,
-        [int]$Mode
+        [hashtable]$ApiNameSet
     )
 
     if (-not $ApiNameSet -or $ApiNameSet.Count -eq 0) { return }
@@ -772,7 +534,7 @@ function Complete-ModulePlan {
         if ($apiHit) {
             $Plan.Break[$i] = $true
             $Plan['ApiCallStatements'] = [int]$Plan['ApiCallStatements'] + 1
-            $Plan.Replacement[$i] = New-ReplacementComment 'api-call' $statement $apiHit $Mode
+            $Plan.Replacement[$i] = New-ReplacementComment 'api-call' $statement $apiHit
         }
     }
 }
@@ -834,8 +596,7 @@ function Invoke-SanitizeFile {
         [string]$FilePath,
         [string]$OutputPath,
         [string]$BaseDir,
-        [System.Collections.IEnumerable]$Rules,
-        [int]$Mode
+        [System.Collections.IEnumerable]$Rules
     )
 
     $row = [ordered]@{
@@ -843,8 +604,6 @@ function Invoke-SanitizeFile {
         RelativePath = Get-RelativePathText $BaseDir $FilePath
         FileName = [IO.Path]::GetFileName($FilePath)
         OutputFile = [IO.Path]::GetFileName($OutputPath)
-        Mode = $Mode
-        ModeName = Get-SanitizeModeName $Mode
         Status = ''
         Modules = 0
         DirectStatements = 0
@@ -869,13 +628,13 @@ function Invoke-SanitizeFile {
     foreach ($moduleName in $project.Modules.Keys) {
         $module = $project.Modules[$moduleName]
         if (-not $module.Entry -or $null -eq $module.Offset -or -not $module.StreamData) { continue }
-        $plan = New-ModulePlan $moduleName $module $Rules $apiNames $Mode
+        $plan = New-ModulePlan $moduleName $module $Rules $apiNames
         $plans[$moduleName] = $plan
         $row.DirectStatements += $plan.DirectStatements
     }
 
     foreach ($moduleName in $plans.Keys) {
-        Complete-ModulePlan $plans[$moduleName] $apiNames $Mode
+        Complete-ModulePlan $plans[$moduleName] $apiNames
         $row.ApiCallStatements += $plans[$moduleName].ApiCallStatements
     }
 
@@ -905,12 +664,8 @@ function Invoke-SanitizeFile {
     if ($changedModules -gt 0) {
         Save-VbaProjectBytes $OutputPath $ole2Bytes $project.IsZip
         $verified = Get-AllModuleCode $OutputPath -IncludeRawData
-        if (Test-StrictVerificationMode $Mode) {
-            Assert-SanitizedSource $verified $Rules $apiNames
-            $row.Status = 'sanitized'
-        } else {
-            $row.Status = 'sanitized-experimental'
-        }
+        Assert-SanitizedSource $verified $Rules $apiNames
+        $row.Status = 'sanitized'
     } else {
         $row.Status = 'copied-clean'
     }
@@ -938,7 +693,6 @@ $processed = 0
 
 Write-VbaLog 'Sanitize' $baseDir "=== Sanitize session started: $($files.Count) files ==="
 Write-VbaLog 'Sanitize' $baseDir "Output dir: $outDir"
-Write-VbaLog 'Sanitize' $baseDir "Mode=$Mode ($(Get-SanitizeModeName $Mode))"
 
 foreach ($file in $files) {
     $processed++
@@ -948,7 +702,7 @@ foreach ($file in $files) {
     Write-VbaStatus 'Sanitize' $fileName "Processing $processed of $($files.Count)"
 
     try {
-        $row = Invoke-SanitizeFile $file $outputPath $baseDir $rules $Mode
+        $row = Invoke-SanitizeFile $file $outputPath $baseDir $rules
         [void]$rows.Add([pscustomobject]$row)
         Write-VbaResult 'Sanitize' $fileName "$($row.Status): $($row.ChangedLines) lines" $outDir 0
         Write-VbaLog 'Sanitize' $file "$($row.Status): direct=$($row.DirectStatements) apiCalls=$($row.ApiCallStatements) lines=$($row.ChangedLines) -> $outputPath"
@@ -959,8 +713,6 @@ foreach ($file in $files) {
             RelativePath = Get-RelativePathText $baseDir $file
             FileName = $fileName
             OutputFile = [IO.Path]::GetFileName($outputPath)
-            Mode = $Mode
-            ModeName = Get-SanitizeModeName $Mode
             Status = 'error'
             Modules = 0
             DirectStatements = 0
