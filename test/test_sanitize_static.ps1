@@ -82,5 +82,8 @@ foreach ($pattern in $forbidden) {
 if ($allText -notmatch '\*\*\*') {
     throw 'Replacement marker was not found in sanitized source.'
 }
+if ($allText -notmatch 'role=') {
+    throw 'Readable replacement metadata was not found in sanitized source.'
+}
 
 Write-Host 'sanitize static test OK'

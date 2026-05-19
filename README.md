@@ -73,13 +73,28 @@ Environment patterns use 3-tier severity:
 
 ## Sanitize
 
-`Sanitize.bat <path>` accepts `.xls`, `.xlsm`, and `.xlam` files. If a folder is passed, files are processed recursively.
+`Sanitize.bat [mode 1-10] <path>` accepts `.xls`, `.xlsm`, and `.xlam` files. If a folder is passed, files are processed recursively. PowerShell callers can use `lib\Sanitize.ps1 -Mode 6 -Path <path>`.
 
 Sanitize is for sheet rescue, not EDR bypass. It irreversibly breaks VBA statements that match the same EDR/NG criteria used by Analyze: `Win32 API (Declare)`, `Shell / process`, and `PowerShell / WScript`. It also extracts callable names from `Declare` statements and breaks their call sites. Statements with VBA line continuation (`_`) are replaced as a whole.
 
 Output is written under `output/<timestamp>_sanitize/` as `<name>_sanitized.<ext>` plus `sanitize.csv`. The original workbook is never overwritten. Replaced VBA lines become harmless comments containing `***`; original dangerous words such as API names or process-launch terms are not kept in those comments.
 
 The sanitized workbook is expected to have broken macros. The goal is to make Excel workbook structure, worksheets, and cell data recoverable while retaining the original workbook format. The sanitizer rewrites compressed VBA source while preserving the existing p-code/performance-cache prefix, because previous zero-fill attempts corrupted workbooks.
+
+Modes:
+
+| Mode | Style | Notes |
+|------|-------|-------|
+| 1 | Safe readable metadata | No original danger words; records role, library family, argument count, return type. |
+| 2 | VBA `'` comment with original text | Preserves original dangerous words in a VBA comment. May still trip EDR. |
+| 3 | `Rem` comment with original text | Preserves original dangerous words; marked experimental because scanners/analyzers may still match it. |
+| 4 | `//` line with original text | Non-VBA comment style; intentionally breaks code and preserves original text. |
+| 5 | `/* ... */` line with original text | C-style marker; intentionally breaks code and preserves original text. |
+| 6 | Light partial mask | Masks danger tokens lightly, e.g. recognizable first/last chunks. |
+| 7 | Medium partial mask | More masking than mode 6. |
+| 8 | Strong partial mask | Mostly first/last character only. |
+| 9 | Initial-only mask | Keeps only initial character for danger tokens. |
+| 10 | Skeleton mask | Masks all alphanumerics in the unsafe statement while keeping punctuation shape. |
 
 Use `RescueSheets.bat` when sheet structure and cell data matter more than keeping the original macro-enabled file format. Use `Sanitize.bat` when you need targeted line-level destruction inside the original workbook format.
 
