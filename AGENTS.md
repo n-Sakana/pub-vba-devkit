@@ -5,7 +5,7 @@ Entry-point notes for Codex. For repo-specific details see [README.md](README.md
 ## Role
 
 - A CLI development kit for Excel / VBA assets
-- Bundles extraction, diff, analysis, environment testing, sanitization, and unlocking
+- Bundles extraction, diff, analysis, environment testing, sanitization, sheet rescue, and unlocking
 - A local toolset that assumes Windows + Excel
 
 ## runtime / connectivity
@@ -17,7 +17,7 @@ Entry-point notes for Codex. For repo-specific details see [README.md](README.md
 ## Where to look first
 
 - `lib/VBAToolkit.psm1` - shared functions
-- `lib/Extract.ps1`, `Diff.ps1`, `Analyze.ps1`, `Sanitize.ps1`, `Unlock.ps1`
+- `lib/Extract.ps1`, `Diff.ps1`, `Analyze.ps1`, `Sanitize.ps1`, `RescueSheets.ps1`, `Unlock.ps1`
 - `config/` - config templates
 - `test/` - automated tests
 
@@ -29,6 +29,7 @@ Diff.bat <old.xlsm> <new.xlsm>
 Analyze.bat <path.xlsm>
 EnvTest.bat
 Sanitize.bat <path>
+RescueSheets.bat <path>
 Unlock.bat <path.xlsm>
 test\Run-All.bat
 ```
@@ -38,4 +39,5 @@ test\Run-All.bat
 - `env-test-results/` may contain confidential information; do not put it in git
 - Always release COM objects
 - `Unlock.bat` is powerful — do not run it without explicit instruction
+- `RescueSheets.bat` is for safe workbook/sheet recovery by removing code, not for preserving or bypassing executable macro behavior
 - Do not break the Windows-only assumption
