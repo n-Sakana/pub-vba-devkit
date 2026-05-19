@@ -36,8 +36,23 @@ $summary = Import-Csv (Join-Path $outDir.FullName 'sanitize.csv') | Select-Objec
 if (-not $summary -or $summary.Status -ne 'sanitized') {
     throw "Unexpected sanitize status: $($summary.Status)"
 }
+if ([string]::IsNullOrWhiteSpace($summary.HtmlReport)) {
+    throw 'Sanitize did not record an HTML report.'
+}
 if ([int]$summary.ChangedLines -le 0) {
     throw 'Sanitize did not replace any lines in the fixture.'
+}
+
+$htmlReport = Join-Path $outDir.FullName $summary.HtmlReport
+if (-not (Test-Path -LiteralPath $htmlReport)) {
+    throw "Sanitize HTML report was not created: $htmlReport"
+}
+$htmlText = Get-Content -LiteralPath $htmlReport -Raw -Encoding UTF8
+if ($htmlText -notmatch 'class="hl-sanitized"') {
+    throw 'Sanitize HTML report does not highlight sanitized lines.'
+}
+if ($htmlText -notmatch 'masked kind=') {
+    throw 'Sanitize HTML report does not include masked replacement text.'
 }
 
 Import-Module $toolkit -Force -DisableNameChecking

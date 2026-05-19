@@ -77,7 +77,7 @@ Environment patterns use 3-tier severity:
 
 Sanitize is for sheet rescue, not EDR bypass. It irreversibly breaks VBA statements that match the same EDR/NG criteria used by Analyze: `Win32 API (Declare)`, `Shell / process`, and `PowerShell / WScript`. It also extracts callable names from `Declare` statements and breaks their call sites. Statements with VBA line continuation (`_`) are replaced as a whole.
 
-Output is written under `output/<timestamp>_sanitize/` as `<name>_sanitized.<ext>` plus `sanitize.csv`. The original workbook is never overwritten. Replaced VBA lines become harmless comments containing `***`; dangerous tokens are partially masked with `*` while preserving enough shape to infer what kind of statement was removed.
+Output is written under `output/<timestamp>_sanitize/` as `<name>_sanitized.<ext>` and `sanitize.csv`. When readable VBA is present, `<name>_sanitized.html` is also written. The original workbook is never overwritten. Replaced VBA lines become harmless comments containing `***`; dangerous tokens are partially masked with `*` while preserving enough shape to infer what kind of statement was removed. The HTML report uses the shared VS Code-style viewer and highlights sanitized lines without click-to-open detail chips.
 
 The sanitized workbook is expected to have broken macros. The goal is to make Excel workbook structure, worksheets, and cell data recoverable while retaining the original workbook format. The sanitizer rewrites compressed VBA source while preserving the existing p-code/performance-cache prefix, because previous zero-fill attempts corrupted workbooks.
 
@@ -96,7 +96,8 @@ output/
 │   └── <name>_analyze.html   HTML viewer (sidebar + code + outline + tooltips)
 ├── 20260328_120700_sanitize/
 │   ├── sanitize.csv
-│   └── <name>_sanitized.xlsm
+│   ├── <name>_sanitized.xlsm
+│   └── <name>_sanitized.html
 ├── 20260328_121000_diff/
 │   ├── diff.txt
 │   └── diff.html

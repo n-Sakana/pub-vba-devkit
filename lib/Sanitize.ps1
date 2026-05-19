@@ -109,6 +109,14 @@ function New-SanitizedOutputPath {
     return (Join-Path $OutDir $candidate)
 }
 
+function New-SanitizeHtmlPath {
+    param([string]$OutputPath)
+
+    $dir = [IO.Path]::GetDirectoryName($OutputPath)
+    $stem = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
+    return (Join-Path $dir "$stem.html")
+}
+
 function Get-EdrRules {
     $defs = Get-VbaAnalysis -Project @{ Modules = [ordered]@{}; Ole2 = $null }
     $rules = [System.Collections.ArrayList]::new()
@@ -567,6 +575,70 @@ function Apply-ModulePlan {
     return ,$newLines
 }
 
+function New-SanitizeHtmlModuleData {
+    param(
+        [hashtable]$Project,
+        [System.Collections.Specialized.OrderedDictionary]$Plans
+    )
+
+    $moduleData = [ordered]@{}
+
+    foreach ($moduleName in $Project.Modules.Keys) {
+        $module = $Project.Modules[$moduleName]
+        $highlights = @{}
+        $lines = [string[]]@($module.Lines)
+
+        if ($Plans -and $Plans.Contains($moduleName)) {
+            $plan = $Plans[$moduleName]
+            for ($i = 0; $i -lt $plan.Groups.Count; $i++) {
+                if (-not $plan.Break[$i]) { continue }
+                $group = $plan.Groups[$i]
+                for ($lineNo = $group.Start; $lineNo -le $group.End; $lineNo++) {
+                    if ($lineNo -lt $lines.Count) {
+                        $highlights[$lineNo] = 'hl-sanitized'
+                    }
+                }
+            }
+        }
+
+        $moduleData[$moduleName] = @{
+            Ext = $module.Ext
+            Lines = $lines
+            Highlights = $highlights
+        }
+    }
+
+    return ,$moduleData
+}
+
+function Write-SanitizeHtmlReport {
+    param(
+        [string]$FilePath,
+        [string]$HtmlPath,
+        [hashtable]$Project,
+        [System.Collections.Specialized.OrderedDictionary]$Plans,
+        [int]$ChangedLines
+    )
+
+    $moduleData = New-SanitizeHtmlModuleData $Project $Plans
+    if ($moduleData.Count -eq 0) { return $false }
+
+    $fileName = [IO.Path]::GetFileName($FilePath)
+    $subtitle = "Changed lines: $ChangedLines"
+
+    New-HtmlCodeView `
+        -title "VBA Sanitize: $fileName" `
+        -subtitle $subtitle `
+        -moduleData $moduleData `
+        -highlightClass 'hl-sanitized' `
+        -highlightColor '#4b3a00' `
+        -highlightText '#f5d98b' `
+        -markerColor '#d7ba7d' `
+        -outputPath $HtmlPath
+
+    return $true
+}
+
 function Assert-SanitizedSource {
     param(
         [hashtable]$Project,
@@ -595,6 +667,7 @@ function Invoke-SanitizeFile {
     param(
         [string]$FilePath,
         [string]$OutputPath,
+        [string]$HtmlPath,
         [string]$BaseDir,
         [System.Collections.IEnumerable]$Rules
     )
@@ -604,6 +677,7 @@ function Invoke-SanitizeFile {
         RelativePath = Get-RelativePathText $BaseDir $FilePath
         FileName = [IO.Path]::GetFileName($FilePath)
         OutputFile = [IO.Path]::GetFileName($OutputPath)
+        HtmlReport = ''
         Status = ''
         Modules = 0
         DirectStatements = 0
@@ -666,8 +740,14 @@ function Invoke-SanitizeFile {
         $verified = Get-AllModuleCode $OutputPath -IncludeRawData
         Assert-SanitizedSource $verified $Rules $apiNames
         $row.Status = 'sanitized'
+        if (Write-SanitizeHtmlReport $FilePath $HtmlPath $verified $plans $row.ChangedLines) {
+            $row.HtmlReport = [IO.Path]::GetFileName($HtmlPath)
+        }
     } else {
         $row.Status = 'copied-clean'
+        if (Write-SanitizeHtmlReport $FilePath $HtmlPath $project $plans $row.ChangedLines) {
+            $row.HtmlReport = [IO.Path]::GetFileName($HtmlPath)
+        }
     }
 
     return $row
@@ -698,14 +778,15 @@ foreach ($file in $files) {
     $processed++
     $fileName = [IO.Path]::GetFileName($file)
     $outputPath = New-SanitizedOutputPath $outDir $baseDir $file $usedOutputNames
+    $htmlPath = New-SanitizeHtmlPath $outputPath
     Write-VbaHeader 'Sanitize' $fileName
     Write-VbaStatus 'Sanitize' $fileName "Processing $processed of $($files.Count)"
 
     try {
-        $row = Invoke-SanitizeFile $file $outputPath $baseDir $rules
+        $row = Invoke-SanitizeFile $file $outputPath $htmlPath $baseDir $rules
         [void]$rows.Add([pscustomobject]$row)
         Write-VbaResult 'Sanitize' $fileName "$($row.Status): $($row.ChangedLines) lines" $outDir 0
-        Write-VbaLog 'Sanitize' $file "$($row.Status): direct=$($row.DirectStatements) apiCalls=$($row.ApiCallStatements) lines=$($row.ChangedLines) -> $outputPath"
+        Write-VbaLog 'Sanitize' $file "$($row.Status): direct=$($row.DirectStatements) apiCalls=$($row.ApiCallStatements) lines=$($row.ChangedLines) -> $outputPath html=$($row.HtmlReport)"
     } catch {
         $err = $_.Exception.Message
         $row = [ordered]@{
@@ -713,6 +794,7 @@ foreach ($file in $files) {
             RelativePath = Get-RelativePathText $baseDir $file
             FileName = $fileName
             OutputFile = [IO.Path]::GetFileName($outputPath)
+            HtmlReport = ''
             Status = 'error'
             Modules = 0
             DirectStatements = 0
@@ -732,3 +814,7 @@ $rows | Export-Csv -Path $summaryPath -NoTypeInformation -Encoding UTF8
 Write-Host ""
 Write-Host "Sanitize output: $outDir" -ForegroundColor Green
 Write-Host "Summary: $summaryPath" -ForegroundColor Gray
+$htmlCount = @($rows | Where-Object { -not [string]::IsNullOrWhiteSpace($_.HtmlReport) }).Count
+if ($htmlCount -gt 0) {
+    Write-Host "HTML reports: $htmlCount" -ForegroundColor Gray
+}
