@@ -106,8 +106,12 @@ analyze.csv: FileA.xlsm に IE Automation 検知あり
 
 ### サニタイズ
 
-デフォルトで sanitize=true は **Win32 API (Declare) のみ**。EDR がファイルを強制破損させる唯一の確定パターン。
-Shell 等は実行時ブロック（ファイル破損なし）のため、デフォルトでは sanitize=false。
+`Sanitize.bat <path>` はシート救出用です。Analyze と同じ EDR/NG 基準
+（`Win32 API (Declare)`, `Shell / process`, `PowerShell / WScript`）に一致する
+VBA ステートメントを、元の危険語を残さない `***` コメントへ不可逆に置換します。
+Declare から抽出できる呼び出し名/alias の呼び出し行も壊します。
+
+マクロは動かなくなる前提です。目的は EDR 回避ではなく、Excel のシート構造とセルデータを開ける状態へ寄せることです。
 
 ## ワークフロー
 
@@ -123,7 +127,7 @@ Shell 等は実行時ブロック（ファイル破損なし）のため、デ�
    → FAIL/BLOCKED パターンを使っているファイルが修正対象
 
 4. 修正対象ファイルに対して:
-   - Analyze のサニタイズ機能で Declare 文を自動コメントアウト
+   - Sanitize で危険な VBA ステートメントを不可逆に破壊
    - HTML レポートのツールチップで代替手段を確認
    - Extract でコードを抽出して手動修正
 
@@ -134,9 +138,9 @@ Shell 等は実行時ブロック（ファイル破損なし）のため、デ�
 
 ```
 vba-devkit/
-├── Extract.bat / Analyze.bat / Diff.bat / Unlock.bat / Probe.bat
+├── Extract.bat / Analyze.bat / Sanitize.bat / Diff.bat / Unlock.bat / EnvTest.bat
 ├── config/
-│   └── analyze.json         パターンごとの detect/sanitize 設定
+│   └── analyze.json         パターンごとの detect 設定
 ├── lib/
 │   ├── VBAToolkit.psm1      共通モジュール (OLE2, VBA 圧縮/展開, C# Add-Type,
 │   │                        分析エンジン, API 代替 DB 60+ 件, HTML テンプレート)

@@ -10,7 +10,8 @@ Excel VBA migration toolkit. Binary-level analysis without opening Excel.
 |-----|-------------|
 | `EnvTest.bat` | Unified environment test launcher (Survey / Probe / Full) |
 | `Extract.bat` | Extract VBA source code (individual modules + combined.txt) |
-| `Analyze.bat` | Analysis + sanitization + migration guide + CSV |
+| `Analyze.bat` | Analysis + migration guide + CSV |
+| `Sanitize.bat` | Break EDR-triggering VBA while keeping the original workbook format |
 | `RescueSheets.bat` | Create a sheet/data rescue copy by removing or wiping VBA code |
 | `Diff.bat` | Side-by-side VBA code comparison |
 
@@ -41,19 +42,9 @@ See also: `docs/storage-path-strategy.md`
 |-----|-------------|
 | `Unlock.bat` | Remove VBA project password protection (non-destructive) |
 
-### Sheet rescue / macro removal
-
-`RescueSheets.bat <path>` is the safest route when an EDR-blocked VBA project makes the entire workbook unusable. It does **not** try to preserve executable macro behavior.
-
-- `.xlsm` / `.xltm`: removes the whole VBA package part and writes a macro-free copy (`*_macrofree.xlsx` / `*_macrofree.xltx`).
-- `.xls`: keeps the workbook container but clears every VBA module source stream and zero-fills stale p-code before saving `*_code_removed.xls`.
-- `.xlam`: there is no macro-free sheet workbook format for add-ins, so it uses the same code-clearing path as `.xls`.
-
-Use `Sanitize.bat` when you want the older targeted line-level masking. Use `RescueSheets.bat` when sheet structure and cell data matter more than keeping existing code.
-
 ## Analyze
 
-Analyze is the core tool. It detects risks across 4 categories:
+Analyze is the core screening tool. It detects risks across 4 categories:
 
 | Category | What it finds | Highlight |
 |----------|---------------|-----------|
@@ -68,13 +59,33 @@ Environment patterns use 3-tier severity:
 - **Info**: Safe alone but dangerous in combination (e.g. `ThisWorkbook.Path`)
 
 3 modes:
-1. **Settings GUI** (no args): Configure detect/sanitize per pattern
-2. **File analysis**: Drop file → HTML viewer + text report + sanitized copy + CSV
-3. **Folder analysis**: Drop folder → analyze all xlsm/xlam/xls recursively
+1. **Settings GUI** (no args): Configure detection per pattern
+2. **File analysis**: Drop file -> HTML viewer + text report + CSV
+3. **Folder analysis**: Drop folder -> analyze all xlsm/xlam/xls recursively
+
+## Sheet Rescue
+
+`RescueSheets.bat <path>` is the safest route when an EDR-blocked VBA project makes the entire workbook unusable. It does not try to preserve executable macro behavior.
+
+- `.xlsm` / `.xltm`: removes the whole VBA package part and writes a macro-free copy (`*_macrofree.xlsx` / `*_macrofree.xltx`).
+- `.xls`: keeps the workbook container but clears every VBA module source stream and zero-fills stale p-code before saving `*_code_removed.xls`.
+- `.xlam`: there is no macro-free sheet workbook format for add-ins, so it uses the same code-clearing path as `.xls`.
+
+## Sanitize
+
+`Sanitize.bat <path>` accepts `.xls`, `.xlsm`, and `.xlam` files. If a folder is passed, files are processed recursively.
+
+Sanitize is for sheet rescue, not EDR bypass. It irreversibly breaks VBA statements that match the same EDR/NG criteria used by Analyze: `Win32 API (Declare)`, `Shell / process`, and `PowerShell / WScript`. It also extracts callable names from `Declare` statements and breaks their call sites. Statements with VBA line continuation (`_`) are replaced as a whole.
+
+Output is written under `output/<timestamp>_sanitize/` as `<name>_sanitized.<ext>` plus `sanitize.csv`. The original workbook is never overwritten. Replaced VBA lines become harmless comments containing `***`; original dangerous words such as API names or process-launch terms are not kept in those comments.
+
+The sanitized workbook is expected to have broken macros. The goal is to make Excel workbook structure, worksheets, and cell data recoverable while retaining the original workbook format. The sanitizer rewrites compressed VBA source while preserving the existing p-code/performance-cache prefix, because previous zero-fill attempts corrupted workbooks.
+
+Use `RescueSheets.bat` when sheet structure and cell data matter more than keeping the original macro-enabled file format. Use `Sanitize.bat` when you need targeted line-level destruction inside the original workbook format.
 
 ## Output
 
-```
+```text
 output/
 ├── 20260328_120000_extract/
 │   ├── modules/<baseName>/   .bas / .cls / .frm (per-file subfolder)
@@ -82,8 +93,10 @@ output/
 ├── 20260328_120500_analyze/
 │   ├── analyze.csv           CSV with all files (EDR/Compat/Env/Biz/judgment columns)
 │   ├── <name>_analyze.txt    Text report per file
-│   ├── <name>_analyze.html   HTML viewer (sidebar + code + outline + tooltips)
-│   └── <name>.xlsm           Sanitized copy (if applicable)
+│   └── <name>_analyze.html   HTML viewer (sidebar + code + outline + tooltips)
+├── 20260328_120700_sanitize/
+│   ├── sanitize.csv
+│   └── <name>_sanitized.xlsm
 ├── 20260328_121000_diff/
 │   ├── diff.txt
 │   └── diff.html
@@ -104,11 +117,11 @@ output/
 
 ## Structure
 
-```
+```text
 vba-devkit/
-├── EnvTest.bat / Extract.bat / Analyze.bat / RescueSheets.bat / Diff.bat / Unlock.bat
+├── EnvTest.bat / Extract.bat / Analyze.bat / Sanitize.bat / RescueSheets.bat / Diff.bat / Unlock.bat
 ├── config/
-│   └── analyze.json         Detect/sanitize settings per pattern
+│   └── analyze.json         Detection settings per pattern
 ├── lib/
 │   ├── VBAToolkit.psm1      Core: OLE2, VBA compress/decompress, C# (Add-Type),
 │   │                       analysis engine, API replacement DB (60+ entries),
@@ -116,6 +129,7 @@ vba-devkit/
 │   ├── EnvTest.ps1
 │   ├── Extract.ps1
 │   ├── Analyze.ps1
+│   ├── Sanitize.ps1
 │   ├── RescueSheets.ps1
 │   ├── Diff.ps1
 │   ├── Unlock.ps1

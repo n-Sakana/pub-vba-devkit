@@ -1,287 +1,574 @@
 param(
-    [string]$Path,
-    [string]$OutputPath,
-    [switch]$DryRun
+    [Parameter(Mandatory = $true)]
+    [string[]]$Path
 )
+
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot\VBAToolkit.psm1" -Force -DisableNameChecking
 
-# ============================================================================
-# EDR patterns to sanitize (probe-BLOCKED only)
-# ============================================================================
+$script:SupportedExtensions = @('.xls', '.xlsm', '.xlam')
+$script:EdrRuleNames = @(
+    'Win32 API (Declare)',
+    'Shell / process',
+    'PowerShell / WScript'
+)
+$script:SafeReplacementLine = "' *** disabled"
 
-$sanitizePatterns = [ordered]@{
-    'Win32 API (Declare)' = @{
-        LinePattern = '(?i)^[^'']*\bDeclare\s+(PtrSafe\s+)?(Function|Sub)\s+(\w+)\s+Lib\s+"([^"]+)"'
-        Rewrite = {
-            param($line, $m)
-            $scope = ''
-            if ($line -match '(?i)^\s*(Private|Public)\s') { $scope = "$($Matches[1]) " }
-            $type = $m.Groups[2].Value    # Function or Sub
-            $name = $m.Groups[3].Value    # API name
-            $dll  = $m.Groups[4].Value    # DLL name
-            $alias = ''
-            if ($line -match 'Alias\s+"([^"]+)"') { $alias = " (alias: $($Matches[1]))" }
-            $sig = ''
-            if ($line -match '\(([^)]*)\)\s*(As\s+\w+)?\s*$') {
-                $params = $Matches[1].Trim()
-                $ret = if ($Matches[2]) { " -> $($Matches[2] -replace 'As\s+', '')" } else { '' }
-                $sig = " | params: $params$ret"
-            }
-            return "' [sanitized:API] ${scope}${type}: ${name} @ ${dll}${alias}${sig}"
-        }
-    }
-    'Shell / process' = @{
-        LinePattern = '(?i)^[^'']*\b(Shell\s*[\("]|WScript\.Shell|cmd\s*/[ck])'
-        Rewrite = {
-            param($line, $m)
-            $trigger = $m.Groups[1].Value.Trim()
-            $indent = if ($line -match '^(\s+)') { $Matches[1] } else { '' }
-            return "${indent}' [sanitized:Process] (original line contained process invocation: $trigger...)"
-        }
-    }
-    'PowerShell / WScript' = @{
-        LinePattern = '(?i)^[^'']*\b(powershell|wscript|cscript|mshta)\b'
-        Rewrite = {
-            param($line, $m)
-            $trigger = $m.Groups[1].Value
-            $indent = if ($line -match '^(\s+)') { $Matches[1] } else { '' }
-            return "${indent}' [sanitized:Script] (original line contained script host invocation: $trigger)"
-        }
-    }
-}
+function Get-SanitizeTargets {
+    param([string[]]$InputPaths)
 
-# ============================================================================
-# Chain capacity check
-# ============================================================================
+    $seen = New-Object 'System.Collections.Hashtable' ([System.StringComparer]::OrdinalIgnoreCase)
+    $targets = [System.Collections.ArrayList]::new()
 
-function Get-StreamChainCapacity {
-    param($ole2, $entry)
-    if ($entry.Size -lt $ole2.MiniStreamCutoff) {
-        $s = $entry.Start; $len = 0
-        while ($s -ge 0 -and $s -ne -2) {
-            $len++
-            $s = if ($s -lt $ole2.MiniFat.Length) { $ole2.MiniFat[$s] } else { -1 }
-        }
-        return $len * $ole2.MiniSectorSize
-    } else {
-        $s = $entry.Start; $len = 0; $visited = @{}
-        while ($s -ge 0 -and $s -ne -2 -and -not $visited.ContainsKey($s)) {
-            $visited[$s] = $true; $len++; $s = $ole2.Fat[$s]
-        }
-        return $len * $ole2.SectorSize
-    }
-}
-
-# ============================================================================
-# Input validation
-# ============================================================================
-
-if (-not $Path) {
-    Write-Host 'Usage: Sanitize.ps1 -Path <xlsm file> [-OutputPath <path>] [-DryRun]' -ForegroundColor Yellow
-    Write-Host '  Masks EDR-triggering VBA patterns in xlsm files at the binary level.' -ForegroundColor Gray
-    Write-Host '  -DryRun  Show what would be masked without modifying any files.' -ForegroundColor Gray
-    exit 1
-}
-
-$resolved = (Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue).Path
-if (-not $resolved) {
-    Write-VbaError 'Sanitize' $Path 'File not found'
-    exit 1
-}
-$ext = [IO.Path]::GetExtension($resolved).ToLower()
-if ($ext -notin '.xlsm', '.xlam', '.xls') {
-    Write-VbaError 'Sanitize' $Path "Unsupported extension: $ext"
-    exit 1
-}
-
-$fileName = [IO.Path]::GetFileName($resolved)
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-
-# ============================================================================
-# Output path
-# ============================================================================
-
-if ($DryRun) {
-    Write-VbaHeader 'Sanitize' "$fileName (DryRun)"
-} else {
-    if (-not $OutputPath) {
-        $outDir = New-VbaOutputDir $resolved 'sanitize'
-        $baseName = [IO.Path]::GetFileNameWithoutExtension($fileName)
-        $ext = [IO.Path]::GetExtension($fileName)
-        $OutputPath = Join-Path $outDir "${baseName}_sanitized${ext}"
-    } else {
-        $outDir = [IO.Path]::GetDirectoryName($OutputPath)
-        if (-not (Test-Path $outDir)) { [void][IO.Directory]::CreateDirectory($outDir) }
-    }
-    Copy-Item -LiteralPath $resolved -Destination $OutputPath -Force
-    Write-VbaHeader 'Sanitize' $fileName
-}
-
-# ============================================================================
-# Load project
-# ============================================================================
-
-$targetPath = if ($DryRun) { $resolved } else { $OutputPath }
-$project = Get-AllModuleCode $targetPath -IncludeRawData
-if (-not $project) {
-    Write-VbaError 'Sanitize' $fileName 'No vbaProject.bin found'
-    exit 1
-}
-$encoding = [System.Text.Encoding]::GetEncoding($project.Codepage)
-$ole2Bytes = $null
-if (-not $DryRun) {
-    $ole2Bytes = [byte[]]$project.Ole2Bytes.Clone()
-}
-
-# ============================================================================
-# Scan and mask
-# ============================================================================
-
-$totalMasked = 0
-$report = [System.Collections.ArrayList]::new()
-
-foreach ($modName in $project.Modules.Keys) {
-    $md = $project.Modules[$modName]
-    if (-not $md.Entry) { continue }
-
-    $lines = @($md.Lines)
-    $modified = $false
-    $modMasked = 0
-
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $line = $lines[$i]
-        # Skip lines that are already comments
-        if ($line -match '^\s*''') { continue }
-
-        foreach ($catName in $sanitizePatterns.Keys) {
-            $pat = $sanitizePatterns[$catName]
-            if ($line -match $pat.LinePattern) {
-                $original = $line
-                $regexMatch = [regex]::Match($line, $pat.LinePattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-
-                # Handle line continuation — join into single line first
-                $fullLine = $original
-                $contCount = 0
-                while ($fullLine -match '_\s*$' -and ($i + $contCount + 1) -lt $lines.Count) {
-                    $contCount++
-                    $fullLine = $fullLine -replace '_\s*$', ''
-                    $fullLine += ' ' + $lines[$i + $contCount].TrimStart()
-                }
-                if ($contCount -gt 0) {
-                    $regexMatch = [regex]::Match($fullLine, $pat.LinePattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-                }
-
-                $lines[$i] = & $pat.Rewrite $fullLine $regexMatch
-
-                # Blank out continuation lines
-                for ($c = 1; $c -le $contCount; $c++) {
-                    $lines[$i + $c] = "' [sanitized-cont]"
-                    $modMasked++
-                }
-                $i += $contCount
-
-                $modified = $true
-                $modMasked++
-                [void]$report.Add(@{ Module = "$modName.$($md.Ext)"; Line = $i + 1; Category = $catName; Original = $original; Masked = $lines[$i] })
-                break  # one match per line
-            }
-        }
-    }
-
-    if ($DryRun) {
-        if ($modMasked -gt 0) {
-            Write-VbaStatus 'Sanitize' $fileName "$modName.$($md.Ext): $modMasked line(s) to sanitize"
-        }
-        $totalMasked += $modMasked
-        continue
-    }
-
-    if (-not $modified) { continue }
-    $totalMasked += $modMasked
-
-    # Re-encode to bytes
-    $newText = $lines -join "`r`n"
-    $newBytes = $encoding.GetBytes($newText)
-
-    # Recompress
-    $recompressed = Compress-VBA $newBytes
-
-    # Rebuild stream: [p-code up to Offset] + [new compressed data]
-    $newStream = New-Object byte[] ($md.Offset + $recompressed.Length)
-    [Array]::Copy($md.StreamData, 0, $newStream, 0, $md.Offset)
-    [Array]::Copy($recompressed, 0, $newStream, $md.Offset, $recompressed.Length)
-
-    # Check capacity
-    $capacity = Get-StreamChainCapacity $project.Ole2 $md.Entry
-    if ($newStream.Length -gt $capacity) {
-        Write-Host "  WARN: $modName stream exceeds capacity ($($newStream.Length) > $capacity). Using minimal mask." -ForegroundColor Yellow
-        # Fallback: minimal comment only
-        $lines2 = @($md.Lines)
-        for ($j = 0; $j -lt $lines2.Count; $j++) {
-            if ($lines2[$j] -match '^\s*''') { continue }
-            foreach ($catName in $sanitizePatterns.Keys) {
-                if ($lines2[$j] -match $sanitizePatterns[$catName].LinePattern) {
-                    $lines2[$j] = "' [sanitized:$catName]"
-                    if ($lines2[$j] -match '_\s*$') {
-                        while (($j + 1) -lt $lines2.Count -and $lines2[$j] -match '_\s*$') {
-                            $j++; $lines2[$j] = "' [sanitized-cont]"
-                        }
+    foreach ($item in $InputPaths) {
+        $resolved = Resolve-Path -LiteralPath $item -ErrorAction Stop
+        foreach ($rp in $resolved) {
+            $fsPath = $rp.ProviderPath
+            if ([IO.Directory]::Exists($fsPath)) {
+                $files = Get-ChildItem -LiteralPath $fsPath -Recurse -File |
+                    Where-Object { $script:SupportedExtensions -contains $_.Extension.ToLowerInvariant() }
+                foreach ($file in $files) {
+                    if (-not $seen.ContainsKey($file.FullName)) {
+                        $seen[$file.FullName] = $true
+                        [void]$targets.Add($file.FullName)
                     }
-                    break
+                }
+            } elseif ([IO.File]::Exists($fsPath)) {
+                $ext = [IO.Path]::GetExtension($fsPath).ToLowerInvariant()
+                if ($script:SupportedExtensions -contains $ext) {
+                    if (-not $seen.ContainsKey($fsPath)) {
+                        $seen[$fsPath] = $true
+                        [void]$targets.Add($fsPath)
+                    }
+                } else {
+                    Write-VbaLog 'Sanitize' $fsPath "SKIP: unsupported extension $ext" 'WARN'
                 }
             }
         }
-        $newBytes2 = $encoding.GetBytes($lines2 -join "`r`n")
-        $recompressed2 = Compress-VBA $newBytes2
-        $newStream = New-Object byte[] ($md.Offset + $recompressed2.Length)
-        [Array]::Copy($md.StreamData, 0, $newStream, 0, $md.Offset)
-        [Array]::Copy($recompressed2, 0, $newStream, $md.Offset, $recompressed2.Length)
     }
 
-    # Write back to OLE2
-    Write-Ole2Stream $ole2Bytes $project.Ole2 $md.Entry $newStream
-    Write-VbaStatus 'Sanitize' $fileName "$modName.$($md.Ext): $modMasked line(s) sanitized"
+    return $targets.ToArray()
 }
 
-# ============================================================================
-# Save and report
-# ============================================================================
+function Get-CommonBaseDirectory {
+    param([string[]]$Files)
 
-if ($DryRun) {
-    Write-Host ''
-    if ($totalMasked -eq 0) {
-        Write-Host '  No EDR patterns found.' -ForegroundColor Green
-    } else {
-        Write-Host "  $totalMasked line(s) would be sanitized" -ForegroundColor Yellow
-        Write-Host ''
-        foreach ($r in $report) {
-            Write-Host "  $($r.Module):$($r.Line)  [$($r.Category)]" -ForegroundColor Gray
-            Write-Host "    $($r.Original)" -ForegroundColor DarkGray
+    if (-not $Files -or $Files.Count -eq 0) { return (Get-Location).Path }
+    $dirs = @($Files | ForEach-Object { [IO.Path]::GetDirectoryName($_) })
+    $base = $dirs[0]
+
+    foreach ($dir in $dirs) {
+        while ($base -and -not $dir.StartsWith($base, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $parent = [IO.Directory]::GetParent($base)
+            if (-not $parent) { return $base }
+            $base = $parent.FullName
         }
     }
-} else {
-    if ($totalMasked -gt 0) {
-        # Invalidate p-code so Excel re-decompiles from source text
-        # _VBA_PROJECT stream offset 2-3 = version; changing it forces recompile
-        $vbaProjEntry = $project.Ole2.Entries | Where-Object { $_.Name -eq '_VBA_PROJECT' -and $_.ObjType -eq 2 } | Select-Object -First 1
-        if ($vbaProjEntry -and $vbaProjEntry.Size -gt 4) {
-            $vbaProjData = Read-Ole2Stream $project.Ole2 $vbaProjEntry
-            # Flip the version to an invalid value
-            $vbaProjData[2] = 0x01
-            $vbaProjData[3] = 0x00
-            Write-Ole2Stream $ole2Bytes $project.Ole2 $vbaProjEntry $vbaProjData
+    return $base
+}
+
+function Get-RelativePathText {
+    param([string]$BaseDir, [string]$FilePath)
+
+    if ($FilePath.StartsWith($BaseDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $FilePath.Substring($BaseDir.Length).TrimStart('\', '/')
+    }
+    return [IO.Path]::GetFileName($FilePath)
+}
+
+function New-SanitizedOutputPath {
+    param(
+        [string]$OutDir,
+        [string]$BaseDir,
+        [string]$FilePath,
+        [hashtable]$UsedNames
+    )
+
+    $baseName = [IO.Path]::GetFileNameWithoutExtension($FilePath).Trim()
+    $ext = [IO.Path]::GetExtension($FilePath)
+    $outStem = $baseName
+    $fileDir = [IO.Path]::GetDirectoryName($FilePath)
+
+    if ($fileDir -and $BaseDir -and -not $fileDir.Equals($BaseDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $rel = Get-RelativePathText $BaseDir $FilePath
+        $relDir = [IO.Path]::GetDirectoryName($rel)
+        if ($relDir) {
+            $prefix = $relDir -replace '[\\/]', '_'
+            $outStem = "${prefix}_$baseName"
+        }
+    }
+
+    $candidate = "${outStem}_sanitized$ext"
+    $n = 2
+    while ($UsedNames.ContainsKey($candidate)) {
+        $candidate = "${outStem}_sanitized_$n$ext"
+        $n++
+    }
+    $UsedNames[$candidate] = $true
+    return (Join-Path $OutDir $candidate)
+}
+
+function Get-EdrRules {
+    $defs = Get-VbaAnalysis -Project @{ Modules = [ordered]@{}; Ole2 = $null }
+    $rules = [System.Collections.ArrayList]::new()
+
+    foreach ($name in $script:EdrRuleNames) {
+        $def = $defs.Patterns[$name]
+        if (-not $def) { throw "Missing EDR rule from VBAToolkit: $name" }
+        [void]$rules.Add([ordered]@{
+            Name = $name
+            Pattern = $def.Pattern
+        })
+    }
+    return ,$rules
+}
+
+function Test-VbaLineContinues {
+    param([string]$Line)
+    if ($null -eq $Line) { return $false }
+    return ($Line -match '(^|[ \t])_\s*(?:''.*)?$')
+}
+
+function Get-VbaStatementGroups {
+    param([string[]]$Lines)
+
+    $groups = [System.Collections.ArrayList]::new()
+    if (-not $Lines) { return ,$groups }
+
+    $start = 0
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if (Test-VbaLineContinues $Lines[$i]) { continue }
+        [void]$groups.Add([ordered]@{
+            Start = $start
+            End = $i
+        })
+        $start = $i + 1
+    }
+
+    if ($start -lt $Lines.Count) {
+        [void]$groups.Add([ordered]@{
+            Start = $start
+            End = $Lines.Count - 1
+        })
+    }
+    return ,$groups
+}
+
+function Get-StatementText {
+    param(
+        [string[]]$Lines,
+        [hashtable]$Group
+    )
+
+    $parts = [System.Collections.ArrayList]::new()
+    for ($i = $Group.Start; $i -le $Group.End; $i++) {
+        [void]$parts.Add($Lines[$i])
+    }
+    return ($parts -join "`n")
+}
+
+function Find-EdrRuleHit {
+    param(
+        [string]$StatementText,
+        [System.Collections.IEnumerable]$Rules
+    )
+
+    foreach ($rule in $Rules) {
+        if ([regex]::IsMatch($StatementText, $rule.Pattern)) {
+            return $rule.Name
+        }
+    }
+    return $null
+}
+
+function Add-NameToSet {
+    param(
+        [hashtable]$Set,
+        [string]$Name
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name)) { return }
+    if ($Name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return }
+    if (-not $Set.ContainsKey($Name)) { $Set[$Name] = $true }
+}
+
+function Add-DeclareNames {
+    param(
+        [string]$StatementText,
+        [hashtable]$NameSet
+    )
+
+    $flat = $StatementText -replace "[ \t]_\s*(`r?`n)", ' '
+    $flat = $flat -replace "(`r?`n)", ' '
+
+    if ($flat -match '(?i)\bDeclare\s+(?:PtrSafe\s+)?(?:Function|Sub)\s+([A-Za-z_][A-Za-z0-9_]*)\b') {
+        Add-NameToSet $NameSet $Matches[1]
+    }
+
+    foreach ($m in [regex]::Matches($flat, '(?i)\bAlias\s+"([^"]+)"')) {
+        Add-NameToSet $NameSet $m.Groups[1].Value
+    }
+}
+
+function Remove-VbaCommentsAndStrings {
+    param([string]$Text)
+
+    $sb = [System.Text.StringBuilder]::new()
+    $inString = $false
+    $i = 0
+
+    while ($i -lt $Text.Length) {
+        $ch = $Text[$i]
+
+        if ($ch -eq '"') {
+            if ($inString -and ($i + 1) -lt $Text.Length -and $Text[$i + 1] -eq '"') {
+                [void]$sb.Append(' ')
+                [void]$sb.Append(' ')
+                $i += 2
+                continue
+            }
+            $inString = -not $inString
+            [void]$sb.Append(' ')
+            $i++
+            continue
         }
 
+        if (-not $inString -and $ch -eq "'") {
+            while ($i -lt $Text.Length -and $Text[$i] -ne "`n") {
+                [void]$sb.Append(' ')
+                $i++
+            }
+            continue
+        }
+
+        if ($inString) {
+            if ($ch -eq "`r" -or $ch -eq "`n") {
+                [void]$sb.Append($ch)
+            } else {
+                [void]$sb.Append(' ')
+            }
+        } else {
+            [void]$sb.Append($ch)
+        }
+        $i++
+    }
+
+    return $sb.ToString()
+}
+
+function Find-ApiCallHit {
+    param(
+        [string]$StatementText,
+        [hashtable]$NameSet
+    )
+
+    if (-not $NameSet -or $NameSet.Count -eq 0) { return $null }
+    $searchText = Remove-VbaCommentsAndStrings $StatementText
+
+    foreach ($name in $NameSet.Keys) {
+        $escaped = [regex]::Escape([string]$name)
+        if ([regex]::IsMatch($searchText, "(?i)(?<![A-Za-z0-9_])$escaped(?![A-Za-z0-9_])")) {
+            return [string]$name
+        }
+    }
+    return $null
+}
+
+function Get-Ole2StreamCapacity {
+    param($Ole2, $Entry)
+
+    if ($Entry.Size -lt $Ole2.MiniStreamCutoff) {
+        $count = 0
+        $s = $Entry.Start
+        $visited = @{}
+        while ($s -ge 0 -and $s -ne -2 -and -not $visited.ContainsKey($s)) {
+            $visited[$s] = $true
+            $count++
+            if ($s -lt $Ole2.MiniFat.Length) { $s = $Ole2.MiniFat[$s] } else { break }
+        }
+        return ($count * $Ole2.MiniSectorSize)
+    }
+
+    $sectorCount = 0
+    $sector = $Entry.Start
+    $seen = @{}
+    while ($sector -ge 0 -and $sector -ne -2 -and -not $seen.ContainsKey($sector)) {
+        $seen[$sector] = $true
+        $sectorCount++
+        if ($sector -lt $Ole2.Fat.Length) { $sector = $Ole2.Fat[$sector] } else { break }
+    }
+    return ($sectorCount * $Ole2.SectorSize)
+}
+
+function New-ModuleStream {
+    param(
+        [string[]]$Lines,
+        [System.Text.Encoding]$Encoding,
+        [hashtable]$ModuleData,
+        $Ole2
+    )
+
+    $text = $Lines -join "`r`n"
+    $capacity = Get-Ole2StreamCapacity $Ole2 $ModuleData.Entry
+    $minStreamSize = 0
+    if ($ModuleData.Entry.Size -ge $Ole2.MiniStreamCutoff) {
+        $minStreamSize = [int]$Ole2.MiniStreamCutoff
+    }
+
+    $attempt = 0
+    while ($true) {
+        $raw = $Encoding.GetBytes($text)
+        $compressed = Compress-VBA $raw
+        $streamLength = $ModuleData.Offset + $compressed.Length
+
+        if (($minStreamSize -eq 0 -or $streamLength -ge $minStreamSize) -and $streamLength -le $capacity) {
+            $newStream = New-Object byte[] $streamLength
+            [Array]::Copy($ModuleData.StreamData, 0, $newStream, 0, $ModuleData.Offset)
+            [Array]::Copy($compressed, 0, $newStream, $ModuleData.Offset, $compressed.Length)
+            return ,$newStream
+        }
+
+        if ($streamLength -gt $capacity) {
+            throw "Sanitized module stream exceeds existing OLE2 chain capacity. Stream=$streamLength Capacity=$capacity"
+        }
+
+        $attempt++
+        $fill = "' *** pad $attempt " + ('x' * 96) + " $attempt"
+        $text = $text + "`r`n" + $fill
+    }
+}
+
+function New-ModulePlan {
+    param(
+        [string]$ModuleName,
+        [hashtable]$Module,
+        [System.Collections.IEnumerable]$Rules,
+        [hashtable]$ApiNameSet
+    )
+
+    $lines = [string[]]@($Module.Lines)
+    $groups = Get-VbaStatementGroups $lines
+    $break = New-Object bool[] $groups.Count
+    $directStatements = 0
+
+    for ($i = 0; $i -lt $groups.Count; $i++) {
+        $group = $groups[$i]
+        $statement = Get-StatementText $lines $group
+        $ruleName = Find-EdrRuleHit $statement $Rules
+        if ($ruleName) {
+            $break[$i] = $true
+            $directStatements++
+            if ($ruleName -eq 'Win32 API (Declare)') {
+                Add-DeclareNames $statement $ApiNameSet
+            }
+        }
+    }
+
+    return [ordered]@{
+        ModuleName = $ModuleName
+        Module = $Module
+        Lines = $lines
+        Groups = $groups
+        Break = $break
+        DirectStatements = $directStatements
+        ApiCallStatements = 0
+        ChangedLines = 0
+    }
+}
+
+function Complete-ModulePlan {
+    param(
+        $Plan,
+        [hashtable]$ApiNameSet
+    )
+
+    if (-not $ApiNameSet -or $ApiNameSet.Count -eq 0) { return }
+
+    for ($i = 0; $i -lt $Plan.Groups.Count; $i++) {
+        if ($Plan.Break[$i]) { continue }
+        $group = $Plan.Groups[$i]
+        $statement = Get-StatementText $Plan.Lines $group
+        $apiHit = Find-ApiCallHit $statement $ApiNameSet
+        if ($apiHit) {
+            $Plan.Break[$i] = $true
+            $Plan['ApiCallStatements'] = [int]$Plan['ApiCallStatements'] + 1
+        }
+    }
+}
+
+function Apply-ModulePlan {
+    param($Plan)
+
+    $newLines = [string[]]$Plan.Lines.Clone()
+    $changed = 0
+    for ($i = 0; $i -lt $Plan.Groups.Count; $i++) {
+        if (-not $Plan.Break[$i]) { continue }
+        $group = $Plan.Groups[$i]
+        for ($lineNo = $group.Start; $lineNo -le $group.End; $lineNo++) {
+            $newLines[$lineNo] = $script:SafeReplacementLine
+            $changed++
+        }
+    }
+    $Plan['ChangedLines'] = $changed
+    return ,$newLines
+}
+
+function Assert-SanitizedSource {
+    param(
+        [hashtable]$Project,
+        [System.Collections.IEnumerable]$Rules,
+        [hashtable]$ApiNameSet
+    )
+
+    foreach ($moduleName in $Project.Modules.Keys) {
+        $module = $Project.Modules[$moduleName]
+        $lines = [string[]]@($module.Lines)
+        $groups = Get-VbaStatementGroups $lines
+        foreach ($group in $groups) {
+            $statement = Get-StatementText $lines $group
+            $ruleName = Find-EdrRuleHit $statement $Rules
+            if ($ruleName) {
+                throw "Verification failed: EDR rule remains in $moduleName"
+            }
+            if (Find-ApiCallHit $statement $ApiNameSet) {
+                throw "Verification failed: declared API call remains in $moduleName"
+            }
+        }
+    }
+}
+
+function Invoke-SanitizeFile {
+    param(
+        [string]$FilePath,
+        [string]$OutputPath,
+        [string]$BaseDir,
+        [System.Collections.IEnumerable]$Rules
+    )
+
+    $row = [ordered]@{
+        Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        RelativePath = Get-RelativePathText $BaseDir $FilePath
+        FileName = [IO.Path]::GetFileName($FilePath)
+        OutputFile = [IO.Path]::GetFileName($OutputPath)
+        Status = ''
+        Modules = 0
+        DirectStatements = 0
+        ApiCallStatements = 0
+        ChangedLines = 0
+        Error = ''
+    }
+
+    Copy-Item -LiteralPath $FilePath -Destination $OutputPath -Force
+
+    $project = Get-AllModuleCode $OutputPath -IncludeRawData
+    if (-not $project) {
+        $row.Status = 'copied-no-vba'
+        return $row
+    }
+
+    $row.Modules = $project.Modules.Count
+    $encoding = [System.Text.Encoding]::GetEncoding($project.Codepage)
+    $apiNames = New-Object 'System.Collections.Hashtable' ([System.StringComparer]::OrdinalIgnoreCase)
+    $plans = [ordered]@{}
+
+    foreach ($moduleName in $project.Modules.Keys) {
+        $module = $project.Modules[$moduleName]
+        if (-not $module.Entry -or $null -eq $module.Offset -or -not $module.StreamData) { continue }
+        $plan = New-ModulePlan $moduleName $module $Rules $apiNames
+        $plans[$moduleName] = $plan
+        $row.DirectStatements += $plan.DirectStatements
+    }
+
+    foreach ($moduleName in $plans.Keys) {
+        Complete-ModulePlan $plans[$moduleName] $apiNames
+        $row.ApiCallStatements += $plans[$moduleName].ApiCallStatements
+    }
+
+    $changedModules = 0
+    $ole2Bytes = [byte[]]$project.Ole2Bytes.Clone()
+
+    foreach ($moduleName in $plans.Keys) {
+        $plan = $plans[$moduleName]
+        $changedGroupCount = 0
+        foreach ($flag in $plan.Break) { if ($flag) { $changedGroupCount++ } }
+        if ($changedGroupCount -eq 0) { continue }
+
+        $changedModules++
+        $newLines = Apply-ModulePlan $plan
+        $row.ChangedLines += $plan.ChangedLines
+
+        $newStream = New-ModuleStream $newLines $encoding $plan.Module $project.Ole2
+        Write-Ole2Stream $ole2Bytes $project.Ole2 $plan.Module.Entry $newStream
+    }
+
+    if ($changedModules -gt 0) {
         Save-VbaProjectBytes $OutputPath $ole2Bytes $project.IsZip
+        $verified = Get-AllModuleCode $OutputPath -IncludeRawData
+        Assert-SanitizedSource $verified $Rules $apiNames
+        $row.Status = 'sanitized'
+    } else {
+        $row.Status = 'copied-clean'
     }
 
-    $sw.Stop()
-    if ($totalMasked -eq 0) {
-        Write-VbaResult 'Sanitize' $fileName 'No EDR patterns found' $null $sw.Elapsed.TotalSeconds
-    } else {
-        Write-VbaResult 'Sanitize' $fileName "$totalMasked line(s) sanitized" $outDir $sw.Elapsed.TotalSeconds
-        Write-Host "  File: $OutputPath" -ForegroundColor Gray
-    }
-    Write-VbaLog 'Sanitize' $resolved "$totalMasked lines sanitized -> $OutputPath"
+    return $row
 }
+
+$rules = Get-EdrRules
+$files = @(Get-SanitizeTargets $Path)
+if ($files.Count -eq 0) {
+    Write-VbaError 'Sanitize' '-' 'No supported Excel/VBA files found'
+    exit 1
+}
+
+$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$devkitRoot = Split-Path "$PSScriptRoot" -Parent
+$outputRoot = Join-Path $devkitRoot 'output'
+$outDir = Join-Path $outputRoot "${timestamp}_sanitize"
+[void][IO.Directory]::CreateDirectory($outDir)
+
+$baseDir = Get-CommonBaseDirectory $files
+$usedOutputNames = New-Object 'System.Collections.Hashtable' ([System.StringComparer]::OrdinalIgnoreCase)
+$rows = [System.Collections.ArrayList]::new()
+$processed = 0
+
+Write-VbaLog 'Sanitize' $baseDir "=== Sanitize session started: $($files.Count) files ==="
+Write-VbaLog 'Sanitize' $baseDir "Output dir: $outDir"
+
+foreach ($file in $files) {
+    $processed++
+    $fileName = [IO.Path]::GetFileName($file)
+    $outputPath = New-SanitizedOutputPath $outDir $baseDir $file $usedOutputNames
+    Write-VbaHeader 'Sanitize' $fileName
+    Write-VbaStatus 'Sanitize' $fileName "Processing $processed of $($files.Count)"
+
+    try {
+        $row = Invoke-SanitizeFile $file $outputPath $baseDir $rules
+        [void]$rows.Add([pscustomobject]$row)
+        Write-VbaResult 'Sanitize' $fileName "$($row.Status): $($row.ChangedLines) lines" $outDir 0
+        Write-VbaLog 'Sanitize' $file "$($row.Status): direct=$($row.DirectStatements) apiCalls=$($row.ApiCallStatements) lines=$($row.ChangedLines) -> $outputPath"
+    } catch {
+        $err = $_.Exception.Message
+        $row = [ordered]@{
+            Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            RelativePath = Get-RelativePathText $baseDir $file
+            FileName = $fileName
+            OutputFile = [IO.Path]::GetFileName($outputPath)
+            Status = 'error'
+            Modules = 0
+            DirectStatements = 0
+            ApiCallStatements = 0
+            ChangedLines = 0
+            Error = $err
+        }
+        [void]$rows.Add([pscustomobject]$row)
+        Write-VbaError 'Sanitize' $fileName $err
+        Write-VbaLog 'Sanitize' $file "ERROR: $err" 'ERROR'
+    }
+}
+
+$summaryPath = Join-Path $outDir 'sanitize.csv'
+$rows | Export-Csv -Path $summaryPath -NoTypeInformation -Encoding UTF8
+
+Write-Host ""
+Write-Host "Sanitize output: $outDir" -ForegroundColor Green
+Write-Host "Summary: $summaryPath" -ForegroundColor Gray

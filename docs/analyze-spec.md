@@ -5,8 +5,8 @@
 Analyze は vba-devkit の中核ツール。Excel を開かずに OLE2 バイナリレベルで VBA コードを解析し、4カテゴリのリスクを検知する。
 
 3モード:
-1. **設定 GUI**（引数なし）: WinForms ダイアログでパターンごとに detect/sanitize を設定
-2. **ファイル分析**: ファイルをドロップ → HTML ビューア + テキストレポート + サニタイズ済みコピー + CSV
+1. **設定 GUI**（引数なし）: WinForms ダイアログでパターンごとの detect を設定
+2. **ファイル分析**: ファイルをドロップ → HTML ビューア + テキストレポート + CSV
 3. **フォルダ分析**: フォルダをドロップ → 再帰走査で全 xlsm/xlam/xls を一括分析
 
 ## 検知カテゴリ
@@ -102,11 +102,17 @@ Info は HTML ハイライトなし。テキストレポートに出力、CSV �
 
 ## サニタイズ
 
-デフォルトで sanitize=true は **Win32 API (Declare) のみ**。
+サニタイズは `Sanitize.bat <path>` で実行する。ファイル指定またはフォルダ再帰指定に対応する。
 
-理由: EDR がファイルを強制破損させるのは Declare 文が存在する場合のみ（ファイルを開く/保存する時点で破損）。Shell 等は実行時ブロック（ファイル自体は無傷）のため、デフォルトではサニタイズしない。
+対象は Analyze と同じ EDR/NG 基準:
 
-サニタイズ処理: 該当行を `' [REMOVED by sanitize] ApiName -- original had N chars` に置換。EDR はコメント内の `Declare ... Lib` もパターンマッチしてファイルを破壊するため、元のキーワードは一切残さない。API名と元の行長だけ記録し、何が除去されたか追跡可能にする。p-code もゼロ埋めする。
+- `Win32 API (Declare)`
+- `Shell / process`
+- `PowerShell / WScript`
+
+サニタイズ処理: 該当ステートメントを、元の危険語を残さない `***` コメントへ置換する。行継続 `_` を含む場合は continuation 全体を置換する。Declare から呼び出し名/alias を抽出できる場合は、その呼び出し行も置換する。
+
+p-code/performance-cache prefix は保持する。過去検証で p-code ゼロ埋めは workbook 破損を起こしたため、圧縮ソースを壊すことを主処理にする。
 
 ## CSV カラム
 
@@ -183,6 +189,6 @@ Timestamp, RelativePath, FileName, Bas, Cls, Frm, TotalModules, CodeLines, EdrIs
 
 ## 設定ファイル
 
-`config/analyze.json` にパターンごとの detect/sanitize 設定を保持。4セクション: edr, compat, env, biz。
+`config/analyze.json` にパターンごとの detect 設定を保持。3セクション: edr, compat, path。
 
 設定 GUI（Analyze.bat を引数なしで実行）で WinForms ダイアログから編集可能。
