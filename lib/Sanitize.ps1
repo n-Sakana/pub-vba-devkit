@@ -740,7 +740,9 @@ function Invoke-SanitizeFile {
         $verified = Get-AllModuleCode $OutputPath -IncludeRawData
         Assert-SanitizedSource $verified $Rules $apiNames
         $row.Status = 'sanitized'
-        if (Write-SanitizeHtmlReport $FilePath $HtmlPath $verified $plans $row.ChangedLines) {
+        # Report must show the original source before masking, while highlighting
+        # the statements that were sanitized in the copied workbook.
+        if (Write-SanitizeHtmlReport $FilePath $HtmlPath $project $plans $row.ChangedLines) {
             $row.HtmlReport = [IO.Path]::GetFileName($HtmlPath)
         }
     } else {

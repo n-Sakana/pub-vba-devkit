@@ -1,4 +1,4 @@
-﻿# CTU Toolkit
+# CTU Toolkit
 
 VBA マクロを Excel を起動せずに調査・解析・サニタイズするための公開用ツール集。`.xlsm` / `.xlam` / `.xls` 内の VBA コードを直接バイナリパース層で取り出し、抽出・解析・EDR トリガー行のマスク・パスワード解除を行う。
 
@@ -51,7 +51,7 @@ VBA コードに含まれる以下 4 カテゴリのリスク要素を検出す�
 - `Shell` / `WScript.Shell` / `cmd /c` などのプロセス起動
 - `powershell` / `wscript` / `cscript` / `mshta` などのスクリプトホスト起動
 
-出力にはサニタイズ済みコピー、HTML レポート、`sanitize.csv` の一覧が含まれる。
+出力にはサニタイズ済みコピー、サニタイズ前ソースを表示して対象行をハイライトする HTML レポート、`sanitize.csv` の一覧が含まれる。
 
 ### Unlock.bat
 

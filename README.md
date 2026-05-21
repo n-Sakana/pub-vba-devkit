@@ -11,7 +11,7 @@ Excel VBA migration toolkit. Binary-level analysis without opening Excel.
 | `EnvTest.bat` | Unified environment test launcher (Survey / Probe / Full) |
 | `Extract.bat` | Extract VBA source code (individual modules + combined.txt) |
 | `Analyze.bat` | Analysis + migration guide + CSV |
-| `Sanitize.bat` | Break EDR-triggering VBA while keeping the original workbook format |
+| `Sanitize.bat` | Create sanitized copies and pre-sanitize HTML reports for EDR-triggering VBA lines |
 | `RescueSheets.bat` | Create a sheet/data rescue copy by removing or wiping VBA code |
 | `Diff.bat` | Side-by-side VBA code comparison |
 
@@ -77,7 +77,7 @@ Environment patterns use 3-tier severity:
 
 Sanitize is for sheet rescue, not EDR bypass. It irreversibly breaks VBA statements that match the same EDR/NG criteria used by Analyze: `Win32 API (Declare)`, `Shell / process`, and `PowerShell / WScript`. It also extracts callable names from `Declare` statements and breaks their call sites. Statements with VBA line continuation (`_`) are replaced as a whole.
 
-Output is written under `output/<timestamp>_sanitize/` as `<name>_sanitized.<ext>` and `sanitize.csv`. When readable VBA is present, `<name>_sanitized.html` is also written. The original workbook is never overwritten. Replaced VBA lines become harmless comments containing `***`; dangerous tokens are partially masked with `*` while preserving enough shape to infer what kind of statement was removed. The HTML report uses the shared VS Code-style viewer and highlights sanitized lines without click-to-open detail chips.
+Output is written under `output/<timestamp>_sanitize/` as `<name>_sanitized.<ext>` and `sanitize.csv`. When readable VBA is present, `<name>_sanitized.html` is also written from the pre-sanitize source and highlights the statements that were masked in the copied workbook. The original workbook is never overwritten. Replaced VBA lines become harmless comments containing `***`; dangerous tokens are partially masked with `*` while preserving enough shape to infer what kind of statement was removed. The HTML report uses the shared VS Code-style viewer and highlights sanitized lines without click-to-open detail chips.
 
 The sanitized workbook is expected to have broken macros. The goal is to make Excel workbook structure, worksheets, and cell data recoverable while retaining the original workbook format. The sanitizer rewrites compressed VBA source while preserving the existing p-code/performance-cache prefix, because previous zero-fill attempts corrupted workbooks.
 
