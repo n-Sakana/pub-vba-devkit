@@ -1,4 +1,4 @@
-﻿param([string[]]$Paths)
+param([string[]]$Paths)
 $ErrorActionPreference = 'Stop'
 Import-Module "$PSScriptRoot\VBAToolkit.psm1" -Force -DisableNameChecking
 
@@ -6,21 +6,21 @@ $configDir = Join-Path (Split-Path "$PSScriptRoot" -Parent) 'config'
 $configPath = Join-Path $configDir 'analyze.json'
 
 # ============================================================================
-# Evidence basis mapping (probe results 2026-03-30)
+# Evidence basis mapping (validated behavior 2026-03-30)
 # ============================================================================
 
 $script:EvidenceMap = @{
     # EDR - observed BLOCKED
-    'Win32 API (Declare)' = @{ Basis = 'observed'; Note = 'Declare is BLOCKED in probe (file corruption on save/reopen)' }
+    'Win32 API (Declare)' = @{ Basis = 'observed'; Note = 'Declare is blocked in validation (file corruption on save/reopen)' }
     'Shell / process'     = @{ Basis = 'observed'; Note = 'WScript.Shell.Run FAIL (write error on Run)' }
-    'PowerShell / WScript' = @{ Basis = 'observed'; Note = 'powershell via VBA FAIL (write error on Run)' }
+    'PowerShell / WScript' = @{ Basis = 'observed'; Note = 'powershell via VBA failed in validation (write error on Run)' }
 
     # Compat - observed FAIL
-    'Deprecated: DAO'       = @{ Basis = 'observed'; Note = 'DAO.DBEngine.36 FAIL (class not registered)' }
-    'Deprecated: Legacy Controls' = @{ Basis = 'observed'; Note = 'MSComDlg.CommonDialog / MSCAL.Calendar FAIL' }
-    'Deprecated: DDE'       = @{ Basis = 'observed'; Note = 'DDEInitiate FAIL' }
-    'SendKeys'              = @{ Basis = 'observed'; Note = 'SendKeys OK in probe but unstable across environments' }
-    'AppActivate'           = @{ Basis = 'observed'; Note = 'AppActivate FAIL in probe' }
+    'Deprecated: DAO'       = @{ Basis = 'observed'; Note = 'DAO.DBEngine.36 failed in validation (class not registered)' }
+    'Deprecated: Legacy Controls' = @{ Basis = 'observed'; Note = 'MSComDlg.CommonDialog / MSCAL.Calendar failed in validation' }
+    'Deprecated: DDE'       = @{ Basis = 'observed'; Note = 'DDEInitiate failed in validation' }
+    'SendKeys'              = @{ Basis = 'observed'; Note = 'SendKeys worked in validation but is unstable across environments' }
+    'AppActivate'           = @{ Basis = 'observed'; Note = 'AppActivate failed in validation' }
     'keybd_event'           = @{ Basis = 'inference'; Note = 'GUI API -- unstable without foreground window' }
     'Sleep'                 = @{ Basis = 'inference'; Note = 'kernel32 Sleep -- Declare required, will be BLOCKED' }
     'Deprecated: IE Automation' = @{ Basis = 'observed'; Note = 'IE removed from OS' }
@@ -30,8 +30,8 @@ $script:EvidenceMap = @{
     '64-bit: VarPtr/ObjPtr/StrPtr' = @{ Basis = 'inference'; Note = 'Returns LongPtr on 64-bit' }
 
     # Compat - observed OK but kept
-    'COM / CreateObject' = @{ Basis = 'observed'; Note = 'Standard COM CreateObject OK in probe' }
-    'COM / GetObject'    = @{ Basis = 'observed'; Note = 'GetObject OK in probe' }
+    'COM / CreateObject' = @{ Basis = 'observed'; Note = 'Standard COM CreateObject worked in validation' }
+    'COM / GetObject'    = @{ Basis = 'observed'; Note = 'GetObject worked in validation' }
 
     # Path - inference (design issue, not security block)
     'Fixed drive letter'     = @{ Basis = 'inference'; Note = 'Hardcoded drive letter -- breaks on OneDrive/SharePoint' }
@@ -63,7 +63,7 @@ $script:EvidenceMap = @{
 # 3-axis remapping: old 4-axis (edr/compat/env/biz) -> new 3-axis (edr/compat/path)
 # ============================================================================
 
-# Which old-axis patterns belong to new EDR axis (only probe-BLOCKED patterns)
+# Which old-axis patterns belong to new EDR axis (blocking patterns)
 $script:EdrPatterns = @(
     'Win32 API (Declare)'
     'Shell / process'
@@ -506,7 +506,7 @@ function Build-AnalyzeTextReport {
 
     # Section 1: EDR Risks
     if ($Remapped.EdrFindings.Count -gt 0) {
-        [void]$txtSb.AppendLine("## EDR Risks ($($Remapped.EdrHits)) -- probe-BLOCKED patterns")
+        [void]$txtSb.AppendLine("## EDR Risks ($($Remapped.EdrHits))")
         foreach ($cat in $Remapped.EdrFindings.Keys) {
             $f = $Remapped.EdrFindings[$cat]
             $basis = Get-EvidenceBasis $cat
@@ -906,7 +906,7 @@ if (-not $Paths -or $Paths.Count -eq 0) {
 
     # 3 groups: EDR, Compat, Path
     $groupDefs = @(
-        @{ Key = 'edr';    Title = 'EDR Risks (probe-BLOCKED)';    Accent = '#4a9eff' }
+        @{ Key = 'edr';    Title = 'EDR Risks';                    Accent = '#4a9eff' }
         @{ Key = 'compat'; Title = 'Compatibility Risks';           Accent = '#9a5eff' }
         @{ Key = 'path';   Title = 'Hardcoded Path Risks';          Accent = '#4aff9e' }
     )

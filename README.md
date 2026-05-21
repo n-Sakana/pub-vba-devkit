@@ -40,8 +40,7 @@ VBA コードを読み取り、次のカテゴリで検出結果を出します�
 
 - **EDR / Security**: Win32 API `Declare`、Shell、WMI、外部プロセス起動など
 - **Compatibility**: `PtrSafe`、DAO、DDE、古いコントロールなど
-- **Environment**: 固定パス、`ThisWorkbook.Path`、`Dir()`、外部リンクなど
-- **Business impact**: Outlook、Word、Access、印刷、PDF、外部 EXE 連携など
+- **Hardcoded Path**: 固定パス、`ThisWorkbook.Path`、`Dir()`、外部リンクなど
 
 出力には HTML ビューア、テキストレポート、`analyze.csv` が含まれます。引数なしで起動すると、検出設定を調整する簡易 GUI が開きます。
 

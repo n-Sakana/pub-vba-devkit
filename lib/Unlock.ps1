@@ -46,6 +46,7 @@ if ($ext -eq '.xls') {
     $excel.DisplayAlerts = $false
     $excel.EnableEvents = $false
     try {
+        $excel.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
         $wb = $excel.Workbooks.Open($copyPath, 0, $false)
         $wb.SaveAs($tempXls, 56)  # xlExcel8
         $wb.Close($false)

@@ -866,7 +866,7 @@ function Get-VbaAnalysis {
         'Registry' = @{ Pattern = '(?m)^[^''\r\n]*\b(GetSetting|SaveSetting|DeleteSetting|RegRead|RegWrite|RegDelete)\b'; Extract = { param($m) $m.Groups[1].Value } }
         'SendKeys' = @{ Pattern = '(?m)^[^''\r\n]*\b(SendKeys)\b'; Extract = { param($m) $m.Groups[1].Value } }
         'Network / HTTP' = @{ Pattern = '(?m)^[^''\r\n]*\b(MSXML2\.XMLHTTP|WinHttp\.WinHttpRequest|URLDownloadToFile|MSXML2\.ServerXMLHTTP)\b'; Extract = { param($m) $m.Groups[1].Value } }
-        'PowerShell / WScript' = @{ Pattern = '(?mi)^[^''\r\n]*\b(powershell|wscript|cscript|mshta)\b'; Extract = { param($m) $m.Groups[1].Value } }
+        'PowerShell / WScript' = @{ Pattern = '(?mi)^[^''\r\n]*\b(powershell|pwsh|wscript|cscript|mshta)\b'; Extract = { param($m) $m.Groups[1].Value } }
         'Process / WMI' = @{ Pattern = '(?m)^[^''\r\n]*\b(winmgmts|Win32_Process|WbemScripting|ExecQuery)\b'; Extract = { param($m) $m.Groups[1].Value } }
         'DLL loading' = @{ Pattern = '(?m)^[^''\r\n]*\b(LoadLibrary|GetProcAddress|FreeLibrary|CallByName)\b'; Extract = { param($m) $m.Groups[1].Value } }
         'Clipboard' = @{ Pattern = '(?m)^[^''\r\n]*\b(MSForms\.DataObject|GetClipboardData|SetClipboardData)\b'; Extract = { param($m) $m.Groups[1].Value } }
@@ -2108,7 +2108,7 @@ Loop
     'Fixed printer name' = @{ Lib = '(Printer)'; Alt = 'Read Application.ActivePrinter dynamically, or externalize to config'; Example = ''; Note = 'Target environment may have completely different printers.' }
     'Fixed IP address' = @{ Lib = '(Network)'; Alt = 'Externalize to config file'; Example = ''; Note = 'IP addresses change on environment migration.' }
     'Fixed connection host' = @{ Lib = '(Network)'; Alt = 'Externalize Server=/Host= values to config'; Example = ''; Note = 'Database/service hosts change on migration.' }
-    'localhost' = @{ Lib = '(Network)'; Alt = 'Confirm localhost backend is deployed (casedesk architecture uses localhost HTTP for VBA-PS communication)'; Example = ''; Note = 'Probe confirmed: XMLHTTP/WinHttp to localhost works. HttpListener can bind. localhost is expected for local backend communication.' }
+    'localhost' = @{ Lib = '(Network)'; Alt = 'Confirm the local backend is deployed before relying on localhost HTTP communication'; Example = ''; Note = 'Validate XMLHTTP/WinHttp access to localhost and local listener binding in the target environment.' }
     'Connection string' = @{ Lib = '(DB)'; Alt = 'Externalize to config. Check Provider version (ACE vs Jet)'; Example = ''; Note = 'ACE/Jet Provider version differs on 64-bit. Connection string paths may also need updating for cloud.' }
     'External workbook open (literal)' = @{ Lib = '(File)'; Alt = 'Externalize file paths to config. Do NOT rely on ThisWorkbook.Path — it returns URL on cloud.'; Example = ''; Note = 'Tested: creating adjacent files via ThisWorkbook.Path fails on OneDrive/SharePoint. Hardcoded paths also break. Use config or TEMP-based approach.' }
 
