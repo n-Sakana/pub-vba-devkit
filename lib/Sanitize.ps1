@@ -12,8 +12,9 @@ $script:EdrRuleNames = @(
     'Shell / process',
     'PowerShell / WScript'
 )
-$script:SafeFallbackLine = "' *** disabled: unsafe statement"
-$script:SafeContinuationLine = "' *** disabled: continued unsafe statement"
+$script:SanitizedMarkerLine = "' sanitized: *****"
+$script:SafeFallbackLine = $script:SanitizedMarkerLine
+$script:SafeContinuationLine = $script:SanitizedMarkerLine
 
 function Get-SanitizeTargets {
     param([string[]]$InputPaths)
@@ -247,76 +248,6 @@ function Add-DeclareNames {
     }
 }
 
-function Get-RelevantMaskTokens {
-    param(
-        [string]$StatementText,
-        $Metadata
-    )
-
-    $tokens = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($token in @(
-        'Declare', 'PtrSafe', 'Lib', 'Alias',
-        'Shell', 'WScript.Shell', 'WScript', 'PowerShell', 'powershell', 'pwsh',
-        'cscript', 'wscript', 'mshta', 'cmd'
-    )) {
-        [void]$tokens.Add($token)
-    }
-
-    if ($Metadata -and $Metadata.Names) {
-        foreach ($name in $Metadata.Names) { [void]$tokens.Add([string]$name) }
-    }
-
-    $flat = Get-FlatStatementText $StatementText
-    foreach ($m in [regex]::Matches($flat, '(?i)\bLib\s+"([^"]+)"')) {
-        $lib = $m.Groups[1].Value
-        [void]$tokens.Add($lib)
-        [void]$tokens.Add([IO.Path]::GetFileNameWithoutExtension($lib))
-    }
-    foreach ($m in [regex]::Matches($flat, '(?i)\bAlias\s+"([^"]+)"')) {
-        [void]$tokens.Add($m.Groups[1].Value)
-    }
-    foreach ($m in [regex]::Matches($flat, '(?i)"([^"]*(?:\.exe|powershell|pwsh|cmd|wscript|cscript|mshta)[^"]*)"')) {
-        foreach ($part in ($m.Groups[1].Value -split '[^A-Za-z0-9_.$-]+')) {
-            if ($part.Length -gt 0) { [void]$tokens.Add($part) }
-            $base = [IO.Path]::GetFileNameWithoutExtension($part)
-            if ($base) { [void]$tokens.Add($base) }
-        }
-    }
-
-    return @($tokens | Where-Object { $_ -and $_.Length -gt 0 } | Sort-Object Length -Descending)
-}
-
-function Mask-TokenText {
-    param([string]$Token)
-
-    if ([string]::IsNullOrEmpty($Token)) { return $Token }
-    $len = $Token.Length
-    if ($len -le 1) { return '*' }
-
-    $left = [Math]::Min(3, [Math]::Max(1, $len - 3))
-    $right = if ($len -gt 5) { 2 } else { 1 }
-    if ($left + $right -ge $len) {
-        $left = 1
-        $right = 0
-    }
-    $middle = [Math]::Max(2, $len - $left - $right)
-    return $Token.Substring(0, $left) + ('*' * $middle) + $(if ($right -gt 0) { $Token.Substring($len - $right) } else { '' })
-}
-
-function Get-MaskedStatementText {
-    param(
-        [string]$StatementText,
-        $Metadata
-    )
-
-    $text = Get-FlatStatementText $StatementText
-    foreach ($token in (Get-RelevantMaskTokens $text $Metadata)) {
-        $replacement = Mask-TokenText $token
-        $text = [regex]::Replace($text, [regex]::Escape($token), [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $replacement }, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-    }
-    return $text
-}
-
 function Get-MaskedReplacementLine {
     param(
         [string]$Kind,
@@ -324,8 +255,7 @@ function Get-MaskedReplacementLine {
         $Metadata
     )
 
-    $masked = Get-MaskedStatementText $StatementText $Metadata
-    return "' *** masked kind=${Kind}: $masked"
+    return $script:SanitizedMarkerLine
 }
 
 function New-ReplacementComment {
@@ -341,13 +271,7 @@ function New-ReplacementComment {
 function Get-CompactReplacementComment {
     param([string]$ReplacementComment)
 
-    if ([string]::IsNullOrWhiteSpace($ReplacementComment)) {
-        return $script:SafeFallbackLine
-    }
-    if ($ReplacementComment -match 'masked kind=([^:]+):') {
-        return "' *** masked kind=$($Matches[1])"
-    }
-    return $script:SafeFallbackLine
+    return $script:SanitizedMarkerLine
 }
 
 function Remove-VbaCommentsAndStrings {
