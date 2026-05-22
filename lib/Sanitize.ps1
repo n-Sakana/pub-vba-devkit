@@ -231,9 +231,21 @@ function Add-NameToSet {
         $Metadata
     )
 
-    if ([string]::IsNullOrWhiteSpace($Name)) { return }
-    if ($Name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return }
-    if (-not $Set.ContainsKey($Name)) { $Set[$Name] = $Metadata }
+    [void](Add-TaintName $Set $Name $Metadata)
+}
+
+function Add-TaintName {
+    param(
+        [hashtable]$Set,
+        [string]$Name,
+        $Metadata
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+    if ($Name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { return $false }
+    if ($Set.ContainsKey($Name)) { return $false }
+    $Set[$Name] = $Metadata
+    return $true
 }
 
 function Add-DeclareNames {
@@ -318,6 +330,74 @@ function Remove-VbaCommentsAndStrings {
     }
 
     return $sb.ToString()
+}
+
+function Get-AddressOfNames {
+    param([string]$StatementText)
+
+    $searchText = Remove-VbaCommentsAndStrings $StatementText
+    $names = [System.Collections.ArrayList]::new()
+    $seen = New-Object 'System.Collections.Hashtable' ([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($m in [regex]::Matches($searchText, '(?i)\bAddressOf\s+([A-Za-z_][A-Za-z0-9_]*)\b')) {
+        $name = $m.Groups[1].Value
+        if (-not $seen.ContainsKey($name)) {
+            $seen[$name] = $true
+            [void]$names.Add($name)
+        }
+    }
+
+    return ,($names.ToArray())
+}
+
+function Get-ProcedureNameFromStatement {
+    param([string]$StatementText)
+
+    $flat = Get-FlatStatementText $StatementText
+    if ($flat -match '(?i)^\s*(?:(?:Public|Private|Friend|Static)\s+)?(?:(?:Sub|Function)\s+([A-Za-z_][A-Za-z0-9_]*)|Property\s+(?:Get|Let|Set)\s+([A-Za-z_][A-Za-z0-9_]*))\b') {
+        if (-not [string]::IsNullOrWhiteSpace($Matches[1])) { return $Matches[1] }
+        return $Matches[2]
+    }
+
+    return $null
+}
+
+function Test-ProcedureEndStatement {
+    param([string]$StatementText)
+
+    $flat = Get-FlatStatementText $StatementText
+    return ($flat -match '(?i)^\s*End\s+(?:Sub|Function|Property)\b')
+}
+
+function Get-ProcedureNameMap {
+    param(
+        [string[]]$Lines,
+        [System.Collections.IEnumerable]$Groups
+    )
+
+    $map = New-Object string[] $Groups.Count
+    $current = $null
+
+    for ($i = 0; $i -lt $Groups.Count; $i++) {
+        $statement = Get-StatementText $Lines $Groups[$i]
+        $procName = Get-ProcedureNameFromStatement $statement
+
+        if ($procName) {
+            $current = $procName
+            $map[$i] = $current
+            continue
+        }
+
+        if ($current) {
+            $map[$i] = $current
+        }
+
+        if (Test-ProcedureEndStatement $statement) {
+            $current = $null
+        }
+    }
+
+    return ,$map
 }
 
 function Find-ApiCallHit {
@@ -442,6 +522,7 @@ function New-ModulePlan {
         Module = $Module
         Lines = $lines
         Groups = $groups
+        ProcedureNames = (Get-ProcedureNameMap $lines $groups)
         Break = $break
         Replacement = $replacement
         DirectStatements = $directStatements
@@ -456,19 +537,50 @@ function Complete-ModulePlan {
         [hashtable]$ApiNameSet
     )
 
-    if (-not $ApiNameSet -or $ApiNameSet.Count -eq 0) { return }
+    if (-not $ApiNameSet) { return $false }
+
+    $changed = $false
 
     for ($i = 0; $i -lt $Plan.Groups.Count; $i++) {
-        if ($Plan.Break[$i]) { continue }
         $group = $Plan.Groups[$i]
         $statement = Get-StatementText $Plan.Lines $group
-        $apiHit = Find-ApiCallHit $statement $ApiNameSet
-        if ($apiHit) {
-            $Plan.Break[$i] = $true
-            $Plan['ApiCallStatements'] = [int]$Plan['ApiCallStatements'] + 1
-            $Plan.Replacement[$i] = New-ReplacementComment 'api-call' $statement $apiHit
+        $isTaintedStatement = [bool]$Plan.Break[$i]
+        $metadata = $null
+
+        if (-not $isTaintedStatement -and $ApiNameSet.Count -gt 0) {
+            $metadata = Find-ApiCallHit $statement $ApiNameSet
+            if ($metadata) {
+                $Plan.Break[$i] = $true
+                $Plan['ApiCallStatements'] = [int]$Plan['ApiCallStatements'] + 1
+                $Plan.Replacement[$i] = New-ReplacementComment 'api-call' $statement $metadata
+                $isTaintedStatement = $true
+                $changed = $true
+            }
+        }
+
+        if (-not $isTaintedStatement) { continue }
+
+        $procName = $Plan.ProcedureNames[$i]
+        if ($procName) {
+            $addedProc = Add-TaintName $ApiNameSet $procName ([ordered]@{
+                Kind = 'vba-procedure'
+                Names = @($procName)
+                SourceModule = $Plan.ModuleName
+            })
+            if ($addedProc) { $changed = $true }
+        }
+
+        foreach ($callbackName in Get-AddressOfNames $statement) {
+            $addedCallback = Add-TaintName $ApiNameSet $callbackName ([ordered]@{
+                Kind = 'address-of-callback'
+                Names = @($callbackName)
+                SourceModule = $Plan.ModuleName
+            })
+            if ($addedCallback) { $changed = $true }
         }
     }
+
+    return $changed
 }
 
 function Apply-ModulePlan {
@@ -631,8 +743,16 @@ function Invoke-SanitizeFile {
         $row.DirectStatements += $plan.DirectStatements
     }
 
+    $taintChanged = $true
+    while ($taintChanged) {
+        $taintChanged = $false
+        foreach ($moduleName in $plans.Keys) {
+            $planChanged = Complete-ModulePlan $plans[$moduleName] $apiNames
+            if ($planChanged) { $taintChanged = $true }
+        }
+    }
+
     foreach ($moduleName in $plans.Keys) {
-        Complete-ModulePlan $plans[$moduleName] $apiNames
         $row.ApiCallStatements += $plans[$moduleName].ApiCallStatements
     }
 

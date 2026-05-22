@@ -80,6 +80,8 @@ Diff.bat C:\path\to\before.xlsm C:\path\to\after.xlsm
 
 - Win32 API `Declare` 行
 - 宣言済み API の呼び出し行
+- 宣言済み API を呼ぶラッパー `Sub` / `Function` と、その呼び出し行
+- `AddressOf` で危険行へ渡されるコールバック関数名
 - `Shell` / `WScript.Shell` / `cmd /c` などのプロセス起動
 - `powershell` / `pwsh` / `wscript` / `cscript` / `mshta` などのスクリプトホスト起動
 
